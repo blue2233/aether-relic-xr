@@ -118,11 +118,11 @@ export class AetherLensController extends BaseScriptComponent {
     private longPressFired = false;
 
     private readonly hints = {
-        anchor: "Point at your Aether Sigil card",
-        summon: "Tap the card to summon the Codex",
-        found: "Sigil found!\nTap it to summon the Codex",
-        select: "Tap a glowing shard to open its Codex card",
-        complete: "Codex Complete!",
+        anchor: "Point at the Aether Sigil card.\nIt won't find itself.",
+        summon: "Tap the card to summon the Codex.\nIt's been waiting. Patiently. Mostly.",
+        found: "Sigil found. Well done, you.\nTap it to summon the Codex.",
+        select: "Tap a glowing shard.\nYes, the glowing ones.",
+        complete: "Codex Complete!\nThe Spire is mildly impressed.",
     };
 
     onAwake() {

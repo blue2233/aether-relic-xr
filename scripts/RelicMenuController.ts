@@ -681,7 +681,7 @@ export class RelicMenuController extends BaseScriptComponent {
         this.buildSiteLink();
 
         const footer = this.ui.createObject("LoreFooter", this.loreCard, LORE_LAYOUT.footer);
-        this.ui.addLabel(footer, "Tap outside the card to close", 11).textFill.color = UiColors.textDim;
+        this.ui.addLabel(footer, "Tap outside the card to close. Or don't. I'll wait.", 11).textFill.color = UiColors.textDim;
 
         this.loreCard.enabled = false;
     }

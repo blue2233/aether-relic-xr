@@ -85,23 +85,25 @@ export class RoomPlacementController extends BaseScriptComponent {
 
     /** The instruction to show while waiting for the tap that places `kind`. */
     public instructionFor(kind: ArtifactKind): string {
-        return kind === ArtifactKind.Sword ? "Tap a wall to hang the sword" : "Tap the floor to place the rug";
+        return kind === ArtifactKind.Sword
+            ? "Tap a wall to hang the sword.\nPointy end away from you."
+            : "Tap the floor to place the rug.\nFloors. Famously down.";
     }
 
     /** STEP 5: tries to place the sword (on a wall) or the rug (on the floor) at a tap. */
     public placeArtifact(kind: ArtifactKind, screenPos: vec2): PlaceResult {
         const hit = this.hitTestWorld(screenPos);
         if (!hit) {
-            return { ok: false, message: "Move your phone slowly to scan" };
+            return { ok: false, message: "Can't see a surface yet.\nMove your phone. Slowly. Gently." };
         }
         if (kind === ArtifactKind.Sword) {
             if (!this.isWall(hit.normal)) {
-                return { ok: false, message: "That's not a wall.\nTap a wall to hang the sword" };
+                return { ok: false, message: "That's not a wall.\nBold choice. Wrong, but bold." };
             }
             this.placeOnWall(this.sword, hit.position, hit.normal);
         } else {
             if (!this.isHorizontalUp(hit.normal)) {
-                return { ok: false, message: "That's not the floor.\nTap the floor to place the rug" };
+                return { ok: false, message: "That's not the floor.\nRugs go down. Gravity agrees." };
             }
             this.placeOnHorizontal(this.rug, hit.position, hit.normal, this.rugLift);
         }
