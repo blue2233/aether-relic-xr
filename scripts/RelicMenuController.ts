@@ -64,6 +64,15 @@ type Side = "left" | "right";
 // ---------- Layout for the default (right side) spot, in Safe Render Region units ----------
 const FULL: UiRect = { left: -1, right: 1, bottom: -1, top: 1 };
 const MENU_BUTTON: UiRect = { left: 0.70, right: 0.94, bottom: 0.26, top: 0.40 };
+// Glowing teal border on the Relic button (rects in the button's own -1..1 space).
+const RELIC_RING_RECT: UiRect = { left: -1.17, right: 1.17, bottom: -1.17, top: 1.17 };
+// The glow texture is solid out to 55% of its radius, then fades, so 1.17 / 0.55 puts the
+// start of the fade right at the ring's edge.
+const RELIC_GLOW_RECT: UiRect = { left: -2.13, right: 2.13, bottom: -2.13, top: 2.13 };
+const RELIC_RING_COLOR = new vec4(0.35, 1.0, 0.9, 1);      // bright aether teal
+const RELIC_GLOW_COLOR = new vec4(0.12, 0.9, 0.8, 1);
+const RELIC_GLOW_MIN = 0.7, RELIC_GLOW_MAX = 1.0;          // breathing alpha range
+const RELIC_GLOW_SPEED = 2.2;                              // radians per second
 const HANDLE_HIT: UiRect = { left: 0.42, right: 0.68, bottom: 0.27, top: 0.39 };   // easy-to-grab area
 const HANDLE_PILL: UiRect = { left: -0.75, right: 0.75, bottom: -0.42, top: 0.42 }; // pill inside the hit area
 const PANEL = { left: 0.08, right: 0.94, top: 0.235 };
@@ -149,6 +158,10 @@ export class RelicMenuController extends BaseScriptComponent {
     loreQrTexture: Texture;
 
     @input
+    @hint("Glow ring texture for the Relic button's teal halo (UI/RelicGlowRing)")
+    glowTexture: Texture;
+
+    @input
     @hint("The effects the MOTION and LOOK buttons switch")
     effects: RelicEffects;
 
@@ -167,6 +180,7 @@ export class RelicMenuController extends BaseScriptComponent {
     private rootST: ScreenTransform;
     private frameST: ScreenTransform;       // moves when the menu is dragged
     private menuButton: { st: ScreenTransform; image: Image; text: Text };
+    private relicGlow: Image | null = null;  // soft halo behind the Relic button
     private handle: { st: ScreenTransform; image: Image };
     private stack: SceneObject;             // everything that shows when the menu is open
     private panelST: ScreenTransform;       // dark backdrop behind tabs + buttons
@@ -222,7 +236,10 @@ export class RelicMenuController extends BaseScriptComponent {
         this.createEvent("TouchStartEvent").bind((e) => this.onDragStart(e.getTouchPosition()));
         this.createEvent("TouchMoveEvent").bind((e) => this.onDragMove(e.getTouchPosition()));
         this.createEvent("TouchEndEvent").bind(() => this.onDragEnd());
-        this.createEvent("UpdateEvent").bind(() => this.updateSnap());
+        this.createEvent("UpdateEvent").bind(() => {
+            this.updateSnap();
+            this.breatheRelicGlow();
+        });
     }
 
     // =====================================================================
@@ -468,6 +485,17 @@ export class RelicMenuController extends BaseScriptComponent {
     // Open / close, tabs, highlights
     // =====================================================================
 
+    /** Slow pulse of the Relic button's teal halo. */
+    private breatheRelicGlow() {
+        if (!this.relicGlow) {
+            return;
+        }
+        const k = 0.5 + 0.5 * Math.sin(getTime() * RELIC_GLOW_SPEED);
+        const a = RELIC_GLOW_MIN + (RELIC_GLOW_MAX - RELIC_GLOW_MIN) * k;
+        const c = RELIC_GLOW_COLOR;
+        this.relicGlow.mainPass.baseColor = new vec4(c.x, c.y, c.z, a);
+    }
+
     /** Opens or closes the stack. Opening starts the 5 s auto-collapse countdown. */
     private setExpanded(expanded: boolean) {
         this.expanded = expanded;
@@ -628,11 +656,19 @@ export class RelicMenuController extends BaseScriptComponent {
             });
         });
 
-        // Round "Relic" button
+        // Round "Relic" button, back to front: soft breathing teal glow, bright teal ring, the
+        // button face, then the label. All children of the button, so they drag and mirror with it.
         const btn = this.ui.createObject("RelicMenuButton", frame, this.toFrame(MENU_BUTTON));
+        if (this.glowTexture) {
+            const glow = this.ui.createObject("RelicButtonGlow", btn, RELIC_GLOW_RECT);
+            this.relicGlow = this.ui.addImage(glow, this.glowTexture, RELIC_GLOW_COLOR, StretchMode.Fit);
+        }
+        const ring = this.ui.createObject("RelicButtonRing", btn, RELIC_RING_RECT);
+        this.ui.addImage(ring, this.circle || this.roundedRect, RELIC_RING_COLOR, StretchMode.Fit);
+        const face = this.ui.createObject("RelicButtonFace", btn, FULL);
         this.menuButton = {
             st: UiFactory.getScreenTransform(btn),
-            image: this.ui.addImage(btn, this.circle || this.roundedRect, UiColors.idle, StretchMode.Fit),
+            image: this.ui.addImage(face, this.circle || this.roundedRect, UiColors.idle, StretchMode.Fit),
             text: this.ui.addLabel(btn, "Relic", 15),
         };
 
