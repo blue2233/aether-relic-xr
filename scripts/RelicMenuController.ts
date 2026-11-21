@@ -1,6 +1,7 @@
 import { RelicEffects } from "./RelicEffects";
 import { UiFactory, UiColors, UiRect } from "./UiFactory";
 import { TouchIndicator } from "./TouchIndicator";
+import { IconToggleButton } from "./IconToggleButton";
 
 /**
  * RelicMenuController
@@ -27,13 +28,15 @@ import { TouchIndicator } from "./TouchIndicator";
  *   The pill has its own branch in handleTap, checked before "close", so tapping it never
  *   closes the card; taps anywhere else on the card are swallowed too.
  *
- * TAPS BUTTON
- *   A separate round icon button at the top right (under Snapchat's flip-camera icon, above
- *   the Relic button) turns the touch indicator (TouchIndicator: teal rings + dot under the
- *   finger, for demo recordings) ON or OFF. ON: bright finger icon, thin teal ring. OFF:
- *   finger greyed to 40% with a red circle-slash, grey ring. Taps on it bounce it and are
- *   consumed here, so they never reach the relic, shards, placement or the ripple. Reset
- *   leaves the ON/OFF state alone.
+ * TAPS + SOUND BUTTONS (IconToggleButton)
+ *   Two small round icon buttons at the top right, under Snapchat's flip-camera icon and
+ *   above the Relic button: Taps (touch indicator: teal rings + dot under the finger, for
+ *   demo recordings) and, to its left, Sound (mutes every Lens sound). ON: bright icon, thin
+ *   teal ring. OFF: icon greyed to 40% with a red circle-slash, grey ring. Taps on them
+ *   bounce them and are consumed here, so they never reach the relic, shards, placement or
+ *   the ripple. Reset leaves both ON/OFF states alone.
+ *
+ * WORLD > Occlusion turns the World Mesh occluder + person cutout on or off (onOcclusionToggled).
  *
  * DRAGGING
  *   Everything lives inside one "MenuFrame" ScreenTransform. Pressing the ⋮⋮ handle and
@@ -70,16 +73,10 @@ type MenuTab = {
 
 type Side = "left" | "right";
 
-// ---------- Taps button: screen position (fractions of the screen) and look ----------
+// ---------- Taps + Sound buttons: screen positions (fractions of the screen) ----------
 const TAPS_CENTER = new vec2(0.91, 0.185);     // top right, under the flip-camera icon, above the Relic button
-const TAPS_DIAMETER = 44 / 390;                // ~44 pt on a 390 pt wide phone, fraction of screen width
-const TAPS_BG = new vec4(0.05, 0.04, 0.08, 0.55);
-const TAPS_TEAL = new vec4(0.18, 0.902, 0.839, 1);
-const TAPS_FINGER_ON = new vec4(0.88, 1.0, 0.97, 1);
-const TAPS_FINGER_OFF = new vec4(0.75, 0.75, 0.78, 0.4);
-const TAPS_RING_OFF = new vec4(0.55, 0.55, 0.6, 0.85);
-const TAPS_CANCEL = new vec4(0.92, 0.36, 0.36, 0.95);
-const TAPS_BOUNCE_SECONDS = 0.15;
+const SOUND_CENTER = new vec2(0.785, 0.185);   // just left of Taps
+const ICON_BUTTON_DIAMETER = 44 / 390;         // ~44 pt on a 390 pt wide phone, fraction of screen width
 
 // ---------- Layout for the default (right side) spot, in Safe Render Region units ----------
 const FULL: UiRect = { left: -1, right: 1, bottom: -1, top: 1 };
@@ -194,6 +191,14 @@ export class RelicMenuController extends BaseScriptComponent {
     ringOutlineTexture: Texture;
 
     @input
+    @hint("Speaker with sound waves, for the Sound button (UI/SoundOn)")
+    soundOnTexture: Texture;
+
+    @input
+    @hint("Bare speaker, for the Sound button when muted (UI/SoundMuted)")
+    soundMutedTexture: Texture;
+
+    @input
     @hint("The effects the MOTION and LOOK buttons switch")
     effects: RelicEffects;
 
@@ -207,6 +212,10 @@ export class RelicMenuController extends BaseScriptComponent {
     public canOpen: () => boolean = () => true;
     /** Called when the Relic button is tapped while the menu is locked. */
     public onLockedTap: () => void = () => {};
+    /** Sound button: true = sound on, false = muted. Set by AetherLensController. */
+    public onSoundToggled: (on: boolean) => void = () => {};
+    /** WORLD > Occlusion: true = occlusion on. Set by AetherLensController. */
+    public onOcclusionToggled: (on: boolean) => void = () => {};
     /** Lore card opened (true) or closed (false); the Lens hides its hint meanwhile. */
     public onLoreToggled: (open: boolean) => void = () => {};
 
@@ -239,10 +248,10 @@ export class RelicMenuController extends BaseScriptComponent {
     private resetFlashing = false;
 
     // ---------- Taps button + touch indicator ----------
-    private tapsOn = true;                  // kept through Reset
-    private taps: { obj: SceneObject; st: ScreenTransform; ring: Image; finger: Image; cancel: SceneObject } | null = null;
-    private tapsBounceStart = -1;
+    private tapsButton: IconToggleButton | null = null;   // states kept through Reset
+    private soundButton: IconToggleButton | null = null;
     private touchFx: TouchIndicator | null = null;
+    private occlusionOn = true;
 
     // ---------- Drag state ----------
     private side: Side = "right";
@@ -278,7 +287,7 @@ export class RelicMenuController extends BaseScriptComponent {
         this.createEvent("TouchStartEvent").bind((e) => {
             const pos = e.getTouchPosition();
             this.onDragStart(pos);
-            if (this.touchFx && !this.isOnTapsButton(pos)) {
+            if (this.touchFx && !this.isOnIconButton(pos)) {
                 this.touchFx.touchStart(pos); // its own button never makes a ripple
             }
         });
@@ -297,15 +306,20 @@ export class RelicMenuController extends BaseScriptComponent {
         // After every script's onAwake: the screen layout is known and the indicator is the
         // last UI created, so it draws on top of everything.
         this.createEvent("OnStartEvent").bind(() => {
-            this.buildTapsButton();
+            this.buildIconButtons();
             if (this.ringOutlineTexture && this.circle) {
                 this.touchFx = new TouchIndicator(this.ui, this.uiParent, this.ringOutlineTexture, this.circle, () => this.uiCamera.aspect);
-                this.touchFx.setEnabled(this.tapsOn);
+                this.touchFx.setEnabled(!this.tapsButton || this.tapsButton.isOn());
             }
         });
         this.createEvent("UpdateEvent").bind(() => {
             this.updateSnap();
-            this.updateTapsBounce();
+            if (this.tapsButton) {
+                this.tapsButton.update();
+            }
+            if (this.soundButton) {
+                this.soundButton.update();
+            }
             if (this.touchFx) {
                 this.touchFx.update();
             }
@@ -340,6 +354,7 @@ export class RelicMenuController extends BaseScriptComponent {
                 title: "WORLD",
                 buttons: [
                     { label: () => "Lore", isActive: () => this.loreCard.enabled, onTap: () => this.showLore() },
+                    { label: () => (this.occlusionOn ? "Occlusion: On" : "Occlusion: Off"), isActive: () => this.occlusionOn, onTap: () => this.toggleOcclusion() },
                     { label: () => "Reset", isActive: () => this.resetFlashing, onTap: () => this.pressReset() },
                 ],
             },
@@ -369,9 +384,18 @@ export class RelicMenuController extends BaseScriptComponent {
             return true;
         }
         // Taps button: toggle the touch indicator; the tap goes no further.
-        if (this.isOnTapsButton(screenPos)) {
-            this.setTapsOn(!this.tapsOn);
-            this.tapsBounceStart = getTime();
+        if (this.tapsButton && this.isOnIconButton(screenPos) && this.tapsButton.containsScreenPoint(screenPos)) {
+            this.tapsButton.setOn(!this.tapsButton.isOn());
+            this.tapsButton.bounce();
+            if (this.touchFx) {
+                this.touchFx.setEnabled(this.tapsButton.isOn());
+            }
+            return true;
+        }
+        if (this.soundButton && this.isOnIconButton(screenPos) && this.soundButton.containsScreenPoint(screenPos)) {
+            this.soundButton.setOn(!this.soundButton.isOn());
+            this.soundButton.bounce();
+            this.onSoundToggled(this.soundButton.isOn());
             return true;
         }
         if (this.hidden) {
@@ -419,7 +443,7 @@ export class RelicMenuController extends BaseScriptComponent {
         if (this.loreCard.enabled || this.dragging) {
             return true;
         }
-        return !this.hidden && (this.isOnTapsButton(screenPos)
+        return !this.hidden && (this.isOnIconButton(screenPos)
             || this.handle.st.containsScreenPoint(screenPos)
             || this.menuButton.st.containsScreenPoint(screenPos)
             || (this.expanded && this.panelST.containsScreenPoint(screenPos)));
@@ -829,64 +853,42 @@ export class RelicMenuController extends BaseScriptComponent {
     }
 
     // =====================================================================
-    // Taps button (touch indicator ON / OFF)
+    // Taps + Sound buttons, Occlusion toggle
     // =====================================================================
 
-    private isOnTapsButton(screenPos: vec2): boolean {
-        return !!this.taps && !this.hidden && !this.loreCard.enabled && this.taps.st.containsScreenPoint(screenPos);
+    /** True if the point is on the Taps or Sound button (while the menu is showing). */
+    private isOnIconButton(screenPos: vec2): boolean {
+        if (this.hidden || this.loreCard.enabled) {
+            return false;
+        }
+        return (!!this.tapsButton && this.tapsButton.containsScreenPoint(screenPos))
+            || (!!this.soundButton && this.soundButton.containsScreenPoint(screenPos));
     }
 
-    private setTapsOn(on: boolean) {
-        this.tapsOn = on;
-        if (this.touchFx) {
-            this.touchFx.setEnabled(on);
-        }
-        if (!this.taps) {
-            return;
-        }
-        this.taps.ring.mainPass.baseColor = on ? TAPS_TEAL : TAPS_RING_OFF;
-        this.taps.finger.mainPass.baseColor = on ? TAPS_FINGER_ON : TAPS_FINGER_OFF;
-        this.taps.cancel.enabled = !on;
-    }
-
-    /** Quick press bounce: 1.0 -> 0.9 -> 1.0 over 0.15 s. */
-    private updateTapsBounce() {
-        if (!this.taps || this.tapsBounceStart < 0) {
-            return;
-        }
-        const t = Math.min(1, (getTime() - this.tapsBounceStart) / TAPS_BOUNCE_SECONDS);
-        const s = 1 - 0.1 * Math.sin(Math.PI * t);
-        this.taps.st.scale = new vec3(s, s, 1);
-        if (t >= 1) {
-            this.tapsBounceStart = -1;
-            this.taps.st.scale = vec3.one();
-        }
+    private toggleOcclusion() {
+        this.occlusionOn = !this.occlusionOn;
+        this.onOcclusionToggled(this.occlusionOn);
     }
 
     /**
-     * Round button fixed at the top right (not in the draggable frame). Built in OnStart so
-     * the screen-to-UI conversion is valid; lives under the menu root so it hides with the
-     * menu (Codex card, Lore card, video, teaser).
+     * Round buttons fixed at the top right (not in the draggable frame). Built in OnStart so
+     * the screen-to-UI conversion is valid; under the menu root so they hide with the menu
+     * (Codex card, Lore card, video, teaser).
      */
-    private buildTapsButton() {
-        if (!this.tapFingerTexture || !this.circle) {
+    private buildIconButtons() {
+        if (!this.circle) {
             return;
         }
-        const halfW = TAPS_DIAMETER / 2;
-        const halfH = halfW * this.uiCamera.aspect;
-        const a = this.rootST.screenPointToLocalPoint(new vec2(TAPS_CENTER.x - halfW, TAPS_CENTER.y - halfH));
-        const b = this.rootST.screenPointToLocalPoint(new vec2(TAPS_CENTER.x + halfW, TAPS_CENTER.y + halfH));
-        const obj = this.ui.createObject("TapsButton", this.root, { left: a.x, right: b.x, bottom: b.y, top: a.y });
-        this.ui.addImage(obj, this.circle, TAPS_BG, StretchMode.Fit);
-
-        const ringObj = this.ui.createObject("TapsRing", obj, FULL);
-        const ring = this.ui.addImage(ringObj, this.ringOutlineTexture || this.circle, TAPS_TEAL, StretchMode.Fit);
-        const fingerObj = this.ui.createObject("TapsFinger", obj, { left: -0.62, right: 0.62, bottom: -0.62, top: 0.62 });
-        const finger = this.ui.addImage(fingerObj, this.tapFingerTexture, TAPS_FINGER_ON, StretchMode.Fit);
-        const cancel = this.ui.createObject("TapsCancel", obj, { left: -0.74, right: 0.74, bottom: -0.74, top: 0.74 });
-        this.ui.addImage(cancel, this.tapCancelTexture || this.circle, TAPS_CANCEL, StretchMode.Fit);
-
-        this.taps = { obj, st: UiFactory.getScreenTransform(obj), ring, finger, cancel };
-        this.setTapsOn(this.tapsOn);
+        const aspect = this.uiCamera.aspect;
+        if (this.tapFingerTexture) {
+            this.tapsButton = new IconToggleButton(this.ui, this.root, this.rootST, aspect, "TapsButton",
+                TAPS_CENTER, ICON_BUTTON_DIAMETER,
+                { circle: this.circle, ring: this.ringOutlineTexture, onIcon: this.tapFingerTexture, cancel: this.tapCancelTexture });
+        }
+        if (this.soundOnTexture) {
+            this.soundButton = new IconToggleButton(this.ui, this.root, this.rootST, aspect, "SoundButton",
+                SOUND_CENTER, ICON_BUTTON_DIAMETER,
+                { circle: this.circle, ring: this.ringOutlineTexture, onIcon: this.soundOnTexture, offIcon: this.soundMutedTexture, cancel: this.tapCancelTexture });
+        }
     }
 }

@@ -1,14 +1,14 @@
 import { ArtifactKind } from "./CodexData";
 
 /**
- * RoomPlacementController  (STEP 5 - place artifacts in the room)
- * --------------------------------------------------------------
+ * RoomPlacementController  (STEP 5 - place artifacts in the room, + occlusion)
+ * ---------------------------------------------------------------------------
  * Places the two ARTIFACT collectibles in the real room when the player taps:
  *
  *   Sword  "Tap a wall to hang the sword"   -> ThornSword hangs HORIZONTALLY on the wall,
  *                                              centred on the hit point, hilt left / tip right
- *   Rug    "Tap the floor to place the rug" -> AetherRug lies flat on the floor
- *                                              (RelicEffects then plays the grow animation)
+ *   Rug    "Tap the floor to place the rug" -> AetherRug lies flat on the floor, ~1 cm above
+ *                                              the hit (RelicEffects then plays the grow)
  *
  * AetherLensController decides WHEN to place (after "Place" on a Codex card) and passes the
  * tap to placeArtifact(). This script only does the real-world hit test and the placement.
@@ -22,6 +22,16 @@ import { ArtifactKind } from "./CodexData";
  *   3. The normal tells us the surface type: a floor faces up, a wall is roughly vertical.
  *   4. The object is moved to the hit point, lifted along the normal so it rests ON the
  *      surface, and rotated to line up with it.
+ *
+ * OCCLUSION (WORLD > Occlusion turns it on/off)
+ *   - World Mesh occluder: the room scan is drawn depth-only with Codex/WorldMeshOccluder,
+ *     whose shader skips (a) upward-facing faces near the floor, so the floor never fights
+ *     the rug, and (b) anything within 30 cm of the camera. Walls, furniture and table tops
+ *     still hide virtual objects behind them. The floor height is estimated here (lowest
+ *     upward surface seen by a few hit tests, and the rug's floor hit) and passed to the
+ *     shader through the material's baseColor.x.
+ *   - Person cutout: a full-screen image of the camera feed masked by Body segmentation,
+ *     drawn over the 3D scene, so a real foot or leg covers the rug.
  */
 
 /** Result of a placement attempt: ok, or a message telling the player what to do. */
@@ -47,6 +57,14 @@ export class RoomPlacementController extends BaseScriptComponent {
 
     // ---------- Tuning (cm) ----------
     @input
+    @hint("World Mesh render visual with the depth-only occluder material (WorldMeshOccluder object)")
+    occluder: RenderMeshVisual;
+
+    @input
+    @hint("Full-screen camera image masked by body segmentation (Full Frame Region > PersonCutout)")
+    personCutout: SceneObject;
+
+    @input
     @hint("Rug: half thickness (1.25 cm) + 1 cm gap so it doesn't flicker against the floor")
     rugLift: number = 2.25;
 
@@ -67,6 +85,13 @@ export class RoomPlacementController extends BaseScriptComponent {
     // a 180° roll around Z turns the tip to the right (+X) and the hilt to the left.
     private readonly swordHorizontal = quat.fromEulerAngles(0, 0, Math.PI);
 
+    // Floor estimate for the occluder shader (world cm). Huge = unknown: every upward face is
+    // then treated as floor, which is the safe choice.
+    private static readonly FLOOR_UNKNOWN = 1000000;
+    private floorY = RoomPlacementController.FLOOR_UNKNOWN;
+    private floorSampleTime = 0;
+    private readonly floorSamplePoints = [new vec2(0.5, 0.85), new vec2(0.25, 0.8), new vec2(0.75, 0.8), new vec2(0.5, 0.65)];
+
     onAwake() {
         if (!this.camera || !this.deviceTracking || !this.rug || !this.sword) {
             print("RoomPlacementController: a required input is missing; check the Inspector.");
@@ -77,6 +102,8 @@ export class RoomPlacementController extends BaseScriptComponent {
         this.deviceTracking.worldOptions.enableWorldMeshesTracking = true;
         this.deviceTracking.worldOptions.nativePlaneTrackingType = NativePlaneTrackingType.Both;
         this.hideAll();
+        this.setUpOccluder();
+        this.createEvent("UpdateEvent").bind(() => this.sampleFloor());
     }
 
     // =====================================================================
@@ -105,9 +132,20 @@ export class RoomPlacementController extends BaseScriptComponent {
             if (!this.isHorizontalUp(hit.normal)) {
                 return { ok: false, message: "That's not the floor.\nRugs go down. Gravity agrees." };
             }
+            this.noteFloor(hit.position.y);
             this.placeOnHorizontal(this.rug, hit.position, hit.normal, this.rugLift);
         }
         return { ok: true, message: "" };
+    }
+
+    /** WORLD > Occlusion: World Mesh occluder + person cutout on or off. */
+    public setOcclusionEnabled(on: boolean) {
+        if (this.occluder) {
+            this.occluder.getSceneObject().enabled = on;
+        }
+        if (this.personCutout) {
+            this.personCutout.enabled = on;
+        }
     }
 
     /** Removes both artifacts from the room (Reset). */
@@ -244,5 +282,55 @@ export class RoomPlacementController extends BaseScriptComponent {
         t.setWorldRotation(wallFrame.multiply(this.swordHorizontal));
         t.setWorldPosition(hitPos.add(out.uniformScale(this.swordWallOffset)));
         obj.enabled = true;
+    }
+
+    // =====================================================================
+    // Occlusion
+    // =====================================================================
+
+    /** Asks the World Mesh for normals (the occluder shader needs them) and starts unknown. */
+    private setUpOccluder() {
+        if (!this.occluder) {
+            return;
+        }
+        try {
+            const provider = this.occluder.mesh.control as WorldRenderObjectProvider;
+            provider.useNormals = true;
+            provider.enableWorldMeshesTracking = true;
+        } catch (e) {
+            print("RoomPlacementController: World Mesh provider not available here (" + e + ")");
+        }
+        this.applyFloor();
+    }
+
+    /** Twice a second: hit-test a few low screen points; the lowest upward surface is the floor. */
+    private sampleFloor() {
+        if (!this.occluder || !this.occluder.getSceneObject().enabled) {
+            return;
+        }
+        const now = getTime();
+        if (now - this.floorSampleTime < 0.5) {
+            return;
+        }
+        this.floorSampleTime = now;
+        for (const point of this.floorSamplePoints) {
+            const hit = this.hitTestWorld(point);
+            if (hit && this.isHorizontalUp(hit.normal)) {
+                this.noteFloor(hit.position.y);
+            }
+        }
+    }
+
+    private noteFloor(y: number) {
+        if (y < this.floorY) {
+            this.floorY = y;
+            this.applyFloor();
+        }
+    }
+
+    private applyFloor() {
+        if (this.occluder && this.occluder.mainMaterial) {
+            this.occluder.mainMaterial.mainPass.baseColor = new vec4(this.floorY, 0, 0, 0);
+        }
     }
 }

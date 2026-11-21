@@ -206,6 +206,8 @@ export class AetherLensController extends BaseScriptComponent {
         this.marker.onCardLost = () => this.onCardLost();
         this.menu.onReset = () => this.resetAll();
         this.menu.onLoreToggled = (open) => this.onLoreToggled(open);
+        this.menu.onSoundToggled = (on) => this.setSoundOn(on);
+        this.menu.onOcclusionToggled = (on) => this.placement.setOcclusionEnabled(on);
         this.menu.canOpen = () => this.marker.isSummoned();
         this.menu.onLockedTap = () => this.onLockedMenuTap();
         if (this.oldPlacementText) {
@@ -765,6 +767,22 @@ export class AetherLensController extends BaseScriptComponent {
         this.hintST.scale = new vec3(scale, scale, 1);
         const a = this.hintAnchors;
         this.hintST.anchors = Rect.create(a.left + shiftX, a.right + shiftX, a.bottom, a.top);
+    }
+
+    // ---------- Sound button: mute / unmute every Lens sound ----------
+    private soundVolumes: Map<AudioComponent, number> | null = null;
+
+    /** Sound button. Remembers each sound's own volume and puts it back on unmute. */
+    private setSoundOn(on: boolean) {
+        const sounds = [this.effects.chime, this.effects.completeSound, this.errorSound].filter((a) => !!a);
+        if (!this.soundVolumes) {
+            this.soundVolumes = new Map();
+            sounds.forEach((a) => this.soundVolumes.set(a, a.volume));
+        }
+        sounds.forEach((a) => (a.volume = on ? this.soundVolumes.get(a) : 0));
+        if (this.swordVideo) {
+            (this.swordVideo.control as VideoTextureProvider).volume = on ? 1 : 0; // the video's own audio
+        }
     }
 
     // ---------- Relic menu tapped before there is a relic ----------
