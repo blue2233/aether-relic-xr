@@ -103,6 +103,7 @@ export class RoomPlacementController extends BaseScriptComponent {
         this.deviceTracking.worldOptions.nativePlaneTrackingType = NativePlaneTrackingType.Both;
         this.hideAll();
         this.setUpOccluder();
+        this.biasRugDepth();
         this.createEvent("UpdateEvent").bind(() => this.sampleFloor());
     }
 
@@ -301,6 +302,22 @@ export class RoomPlacementController extends BaseScriptComponent {
             print("RoomPlacementController: World Mesh provider not available here (" + e + ")");
         }
         this.applyFloor();
+    }
+
+    /**
+     * Pulls the rug's depth slightly toward the camera (negative polygon offset) so it always
+     * wins against any leftover floor mesh. Set at runtime because the rug's material lives
+     * inside the imported model, where editor changes don't stick.
+     */
+    private biasRugDepth() {
+        const visuals = this.rug.getComponents("Component.RenderMeshVisual")
+            .concat(...this.rug.children.map((c) => c.getComponents("Component.RenderMeshVisual")));
+        for (const visual of visuals) {
+            for (let i = 0; i < visual.getMaterialsCount(); i++) {
+                const pass = visual.getMaterial(i).mainPass;
+                pass.polygonOffset = new vec2(-1, -2);
+            }
+        }
     }
 
     /** Twice a second: hit-test a few low screen points; the lowest upward surface is the floor. */
