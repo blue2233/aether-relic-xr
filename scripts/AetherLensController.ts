@@ -193,7 +193,7 @@ export class AetherLensController extends BaseScriptComponent {
     // STEP 4 - CODEX CARD
     // =====================================================================
 
-    /** Shows the floating Codex card for one shard. The menu hides so nothing overlaps it. */
+    /** Shows the full-screen Codex card. Menu, hint and counter hide; closeCard brings them back. */
     private openCard(index: number) {
         this.openIndex = index;
         this.card.open(index, this.collected[index]);
@@ -331,11 +331,8 @@ export class AetherLensController extends BaseScriptComponent {
             const hit = this.card.handleTap(screenPos);
             if (hit === "primary") {
                 this.onCardPrimary();
-            } else if (hit === "close") {
-                this.closeCard();
-            } else if (hit === "outside") {
-                this.closeCard();
-                this.selectShard(screenPos); // tapping another shard opens it straight away
+            } else if (hit === "close" || hit === "outside") {
+                this.closeCard(); // the full-screen card swallows the tap: nothing passes through
             }
             return;
         }
