@@ -227,12 +227,53 @@ export class AetherLensController extends BaseScriptComponent {
         this.showHint(this.hints.select, 4);
     }
 
-    /** Tap in SELECT / COMPLETE: open the card of the shard under the finger (if any). */
+    /** Tap in SELECT / COMPLETE: open the card of the shard under the finger, or mock the miss. */
     private selectShard(screenPos: vec2) {
         const index = this.shards.pick(screenPos);
         if (index >= 0) {
+            this.missStreak = 0;
             this.openCard(index);
+        } else {
+            this.onShardMiss();
         }
+    }
+
+    // ---------- Miss quips (the narrator notices) ----------
+    private readonly missQuips = [
+        "Missed. The shards are\nthe glowing bits.",
+        "That was air. Tapping air\nyields air. Try a shard.",
+        "Bold of you to tap nothing.\nTry the glowing crystals.",
+        "Close. Well, no. Not close.\nAim for a shard.",
+        "Your finger found nothing.\nInspiring, really.",
+        "The shards are right there.\nGlowing. Helpfully.",
+        "Nope. That's the room.\nThe room is not collectible.",
+        "Another miss. I'm logging\nthese, by the way.",
+        "Tap a shard. Any shard.\nI'm not picky.",
+        "The relic doesn't need poking.\nThe shards, however...",
+    ];
+    private readonly streakQuips: { [misses: number]: string } = {
+        5: "Five misses in a row.\nA record. Not a good one.",
+        10: "Ten misses. I've started\na support group for you.",
+    };
+    private quipBag: number[] = [];
+    private missStreak = 0;
+    private lastQuipTime = -10;
+
+    /** A tap that hit no shard: show the next quip (shuffled, no repeats until all are used). */
+    private onShardMiss() {
+        if (getTime() - this.lastQuipTime < 0.5) {
+            return; // rapid tapping: let the current quip be read
+        }
+        this.lastQuipTime = getTime();
+        this.missStreak++;
+        let quip = this.streakQuips[this.missStreak];
+        if (!quip) {
+            if (this.quipBag.length === 0) {
+                this.quipBag = this.missQuips.map((_, i) => i).sort(() => Math.random() - 0.5);
+            }
+            quip = this.missQuips[this.quipBag.pop()];
+        }
+        this.showHint(quip, 2.5);
     }
 
     // =====================================================================
@@ -349,6 +390,7 @@ export class AetherLensController extends BaseScriptComponent {
     public resetAll() {
         this.collected = CODEX_ENTRIES.map(() => false);
         this.openIndex = this.placingIndex = -1;
+        this.missStreak = 0;
         this.card.hide();
         this.card.resetChecks();
         this.card.setChecksVisible(false);
