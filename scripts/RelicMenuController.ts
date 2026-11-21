@@ -16,7 +16,15 @@ import { UiFactory, UiColors, UiRect } from "./UiFactory";
  *
  * Toggles that are ON are thorn violet; the selected tab is moonlight lavender. The menu
  * closes itself 5 s after the last tap on it. "Lore" opens a story card with the map of the
- * Wyrendal Dominion; tap anywhere to close. The Lens hides its hint while the card is open.
+ * Wyrendal Dominion and a QR code of the project page; tap outside the card to close. The
+ * Lens hides its hint while the card is open.
+ *
+ * LORE SITE LINK
+ *   Snapchat Lenses on phones have no API to open a web page (the only link API,
+ *   DeepLinkModule, is Spectacles-only). So the card shows a small QR code + the address, and
+ *   its "Open Lore Site" pill swaps the map for a big QR code that another phone can scan.
+ *   The pill has its own branch in handleTap, checked before "close", so tapping it never
+ *   closes the card; taps anywhere else on the card are swallowed too.
  *
  * DRAGGING
  *   Everything lives inside one "MenuFrame" ScreenTransform. Pressing the ⋮⋮ handle and
@@ -62,20 +70,26 @@ const PANEL = { left: 0.08, right: 0.94, top: 0.235 };
 const TAB_ROW = { left: 0.11, right: 0.91, bottom: 0.15, top: 0.222, gap: 0.02 };
 const BUTTON_COLUMN = { left: 0.11, right: 0.91, firstTop: 0.13, height: 0.085, gap: 0.018 };
 const MAX_ROWS = 4;                                            // longest tab (MOTION)
-const LORE_CARD: UiRect = { left: -0.86, right: 0.86, bottom: -0.72, top: 0.70 };
+const LORE_CARD: UiRect = { left: -0.86, right: 0.86, bottom: -0.80, top: 0.74 };
 
 // Lore card contents, in the card's own -1..1 space (8% padding = 0.16 of the -1..1 width).
 const LORE_LAYOUT = {
-    title: { left: -0.9, right: 0.9, bottom: 0.8, top: 0.95 },
-    body: { left: -0.84, right: 0.84, bottom: 0.42, top: 0.78 },
-    map: { left: -0.84, right: 0.84, bottom: -0.62, top: 0.38 },   // area the 3:2 map is fitted into
-    caption: { left: -0.84, right: 0.84, bottom: -0.73, top: -0.64 },
-    link: { left: -0.84, right: 0.84, bottom: -0.84, top: -0.75 },
-    footer: { left: -0.9, right: 0.9, bottom: -0.97, top: -0.87 },
+    title: { left: -0.9, right: 0.9, bottom: 0.82, top: 0.96 },
+    body: { left: -0.84, right: 0.84, bottom: 0.48, top: 0.80 },
+    map: { left: -0.84, right: 0.84, bottom: -0.36, top: 0.44 },   // area the 3:2 map is fitted into
+    caption: { left: -0.84, right: 0.84, bottom: -0.47, top: -0.38 },
+    bigQr: { left: -0.84, right: 0.84, bottom: -0.47, top: 0.44 }, // replaces map + caption
+    smallQr: { left: -0.84, right: -0.40, bottom: -0.88, top: -0.52 },
+    address: { left: -0.34, right: 0.84, bottom: -0.66, top: -0.52 },
+    sitePill: { left: -0.34, right: 0.84, bottom: -0.88, top: -0.69 },
+    footer: { left: -0.9, right: 0.9, bottom: -0.98, top: -0.91 },
 };
 
-// Project page. Phone Lenses can't open web links, so it is shown as text to type or search.
+// Project page. Phone Lenses can't open web links, so it is shown as a QR code + text.
 const LORE_LINK = "blue2233.github.io/aether-relic-xr";
+const SITE_PILL_LABEL = "Open Lore Site";
+const SITE_PILL_BACK = "Back to Map";
+const LINK_TEAL = new vec4(0.35, 1.0, 0.9, 1);    // bright aether teal
 const MAP_ASPECT = 3 / 2;          // dominion-map-1200 is 1200 x 800
 const MAP_BORDER = 0.025;          // thin teal frame, as a fraction of the map area's height
 const MAP_CAPTION = "The Wyrendal Dominion";
@@ -131,6 +145,10 @@ export class RelicMenuController extends BaseScriptComponent {
     loreMapTexture: Texture;
 
     @input
+    @hint("QR code of the project page, shown on the Lore card (UI/LoreSiteQR)")
+    loreQrTexture: Texture;
+
+    @input
     @hint("The effects the MOTION and LOOK buttons switch")
     effects: RelicEffects;
 
@@ -153,6 +171,10 @@ export class RelicMenuController extends BaseScriptComponent {
     private stack: SceneObject;             // everything that shows when the menu is open
     private panelST: ScreenTransform;       // dark backdrop behind tabs + buttons
     private loreCard: SceneObject;
+    private loreCardST: ScreenTransform;
+    private loreMapGroup: SceneObject;       // map + caption
+    private loreBigQr: SceneObject;          // big QR shown instead of the map
+    private sitePill: { st: ScreenTransform; text: Text };
     private loreMapAreaST: ScreenTransform;  // where the map may go
     private loreMapFrameST: ScreenTransform; // thin teal border
     private loreMapST: ScreenTransform;      // the map itself
@@ -243,7 +265,15 @@ export class RelicMenuController extends BaseScriptComponent {
     /** Handles a tap. Returns true if the menu or lore card used it (or it ended a drag). */
     public handleTap(screenPos: vec2): boolean {
         if (this.loreCard.enabled) {
-            this.hideLore(); // an open lore card takes any tap and closes
+            // The site pill is handled first and stops here, so it can never close the card.
+            if (this.sitePill.st.containsScreenPoint(screenPos)) {
+                this.toggleBigQr();
+                return true;
+            }
+            // Any other tap ON the card is swallowed; only a tap outside it closes.
+            if (!this.loreCardST.containsScreenPoint(screenPos)) {
+                this.hideLore();
+            }
             return true;
         }
         // The finger was dragging the menu: never let that count as a scene tap.
@@ -501,9 +531,10 @@ export class RelicMenuController extends BaseScriptComponent {
         this.onReset();
     }
 
-    /** Lore: shows the story card (tap anywhere to close). */
+    /** Lore: shows the story card (tap outside it to close). */
     private showLore() {
         this.setExpanded(false);
+        this.setBigQr(false);
         this.loreCard.enabled = true;
         this.root.enabled = false; // nothing draws over the card
         this.fitLoreMap();
@@ -512,8 +543,23 @@ export class RelicMenuController extends BaseScriptComponent {
 
     private hideLore() {
         this.loreCard.enabled = false;
+        this.setBigQr(false);
         this.root.enabled = !this.hidden;
         this.onLoreToggled(false);
+    }
+
+    /** "Open Lore Site": no phone API can open a URL, so show a big scannable QR instead. */
+    private toggleBigQr() {
+        this.setBigQr(!(this.loreBigQr && this.loreBigQr.enabled));
+    }
+
+    private setBigQr(on: boolean) {
+        if (!this.loreBigQr) {
+            return;
+        }
+        this.loreBigQr.enabled = on;
+        this.loreMapGroup.enabled = !on;
+        this.sitePill.text.text = on ? SITE_PILL_BACK : SITE_PILL_LABEL;
     }
 
     /**
@@ -603,6 +649,7 @@ export class RelicMenuController extends BaseScriptComponent {
 
     private buildLoreCard() {
         this.loreCard = this.ui.createObject("LoreCard", this.uiParent, LORE_CARD);
+        this.loreCardST = UiFactory.getScreenTransform(this.loreCard);
         this.ui.addImage(this.loreCard, this.panelTexture || this.roundedRect, UiColors.card);
 
         const title = this.ui.createObject("LoreTitle", this.loreCard, LORE_LAYOUT.title);
@@ -615,8 +662,10 @@ export class RelicMenuController extends BaseScriptComponent {
 
         // Map of the Dominion: thin teal (aether) frame + the map, fitted to 3:2 in fitLoreMap().
         // Images take no taps, so "tap anywhere to close" still works on top of the map.
+        // Map + caption share a group so the big QR can replace them.
+        this.loreMapGroup = this.ui.createObject("LoreMapGroup", this.loreCard, FULL);
         if (this.loreMapTexture) {
-            const area = this.ui.createObject("LoreMapArea", this.loreCard, LORE_LAYOUT.map);
+            const area = this.ui.createObject("LoreMapArea", this.loreMapGroup, LORE_LAYOUT.map);
             this.loreMapAreaST = UiFactory.getScreenTransform(area);
             const frame = this.ui.createObject("LoreMapFrame", area, FULL);
             this.ui.addImage(frame, this.panelTexture || this.roundedRect, UiColors.teal);
@@ -625,16 +674,39 @@ export class RelicMenuController extends BaseScriptComponent {
             this.ui.addImage(map, this.loreMapTexture, new vec4(1, 1, 1, 1), StretchMode.Fit);
             this.loreMapST = UiFactory.getScreenTransform(map);
 
-            const caption = this.ui.createObject("LoreMapCaption", this.loreCard, LORE_LAYOUT.caption);
+            const caption = this.ui.createObject("LoreMapCaption", this.loreMapGroup, LORE_LAYOUT.caption);
             this.ui.addLabel(caption, MAP_CAPTION, 13).textFill.color = UiColors.moonlight;
         }
 
-        const link = this.ui.createObject("LoreLink", this.loreCard, LORE_LAYOUT.link);
-        this.ui.addLabel(link, "More: " + LORE_LINK, 13).textFill.color = new vec4(0.35, 1.0, 0.9, 1); // bright aether teal
+        this.buildSiteLink();
 
         const footer = this.ui.createObject("LoreFooter", this.loreCard, LORE_LAYOUT.footer);
-        this.ui.addLabel(footer, "Tap anywhere to close", 11).textFill.color = UiColors.textDim;
+        this.ui.addLabel(footer, "Tap outside the card to close", 11).textFill.color = UiColors.textDim;
 
         this.loreCard.enabled = false;
+    }
+
+    /** Small QR + address + "Open Lore Site" pill, and the big QR the pill toggles. */
+    private buildSiteLink() {
+        if (this.loreQrTexture) {
+            // The QR art is black on white with its own quiet zone; Fit keeps it square.
+            const small = this.ui.createObject("LoreQrSmall", this.loreCard, LORE_LAYOUT.smallQr);
+            this.ui.addImage(small, this.loreQrTexture, new vec4(1, 1, 1, 1), StretchMode.Fit);
+
+            this.loreBigQr = this.ui.createObject("LoreQrBig", this.loreCard, LORE_LAYOUT.bigQr);
+            const big = this.ui.createObject("LoreQrBigImage", this.loreBigQr, { left: -1, right: 1, bottom: -0.74, top: 1 });
+            this.ui.addImage(big, this.loreQrTexture, new vec4(1, 1, 1, 1), StretchMode.Fit);
+            const scan = this.ui.createObject("LoreQrBigCaption", this.loreBigQr, { left: -1, right: 1, bottom: -1, top: -0.8 });
+            this.ui.addLabel(scan, "Scan with another device to open the Lore site", 13).textFill.color = UiColors.moonlight;
+            this.loreBigQr.enabled = false;
+        }
+
+        const address = this.ui.createObject("LoreAddress", this.loreCard, LORE_LAYOUT.address);
+        this.ui.addLabel(address, LORE_LINK, 12, FULL).textFill.color = LINK_TEAL;
+
+        const pill = this.ui.createObject("LoreSitePill", this.loreCard, LORE_LAYOUT.sitePill);
+        this.ui.addImage(pill, this.roundedRect, UiColors.teal);
+        const text = this.ui.addLabel(pill, SITE_PILL_LABEL, 15);
+        this.sitePill = { st: UiFactory.getScreenTransform(pill), text };
     }
 }
