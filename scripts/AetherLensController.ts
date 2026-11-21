@@ -123,6 +123,10 @@ export class AetherLensController extends BaseScriptComponent {
     swordVideo: Texture;
 
     @input
+    @hint("Audio component with the error 'nope' sound (Audio/ErrorNope), played with every red error message")
+    errorSound: AudioComponent;
+
+    @input
     @hint("Seconds to hold a finger down (outside the menu) to Reset")
     longPressSeconds: number = 0.8;
 
@@ -668,6 +672,12 @@ export class AetherLensController extends BaseScriptComponent {
         this.hintText.backgroundSettings.fill.color = box;
         this.hintAnimStart = style === "normal" ? -1 : getTime();
         this.applyHintMotion(1, 0);
+        if (style === "error" && this.errorSound) {
+            if (this.errorSound.isPlaying()) {
+                this.errorSound.stop(false); // rapid errors: restart rather than pile up
+            }
+            this.errorSound.play(1);
+        }
     }
 
     /** Pulse ("found") or shake ("error"); the hint is back at rest when it ends. */
