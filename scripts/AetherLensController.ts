@@ -398,6 +398,7 @@ export class AetherLensController extends BaseScriptComponent {
     private onLoreToggled(open: boolean) {
         this.loreOpen = open;
         this.hintText.getSceneObject().enabled = this.hintWanted && !open;
+        this.card.setChecksVisible(!open && this.marker.isSummoned()); // ticks would draw over the card
     }
 
     /**
