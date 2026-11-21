@@ -192,7 +192,7 @@ export class MarkerRelicController extends BaseScriptComponent {
     }
 
     /** The card's world position and rotation (the real marker, or the editor test card). */
-    private getCardPose(): { pos: vec3; rot: quat } {
+    public getCardPose(): { pos: vec3; rot: quat } {
         if (this.simulatedCard) {
             return this.simulatedCard;
         }

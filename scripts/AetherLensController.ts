@@ -5,6 +5,7 @@ import { RelicEffects } from "./RelicEffects";
 import { ShardRing } from "./ShardRing";
 import { CodexCardView } from "./CodexCardView";
 import { CODEX_ENTRIES, CODEX_SIZE, ArtifactKind } from "./CodexData";
+import { AetherDust } from "./AetherDust";
 
 /**
  * AetherLensController - the core loop of Aether Relic XR
@@ -12,8 +13,8 @@ import { CODEX_ENTRIES, CODEX_SIZE, ArtifactKind } from "./CodexData";
  *   Scan -> Place -> Interact -> Collect, as a simple state machine:
  *
  *   ANCHOR   "Point at your Aether Sigil card"        wait for the printed 10 cm card
- *      | card found
- *   SUMMON   "Tap the card to summon the Codex"       tap the card ->
+ *      | card found -> aether dust puffs out of the Sigil, hint pulses
+ *   SUMMON   "Sigil found! Tap it to summon..."       tap the card ->
  *      | tap on card                                  relic pops onto the card + chime
  *   SELECT   8 glowing shards circle the relic        tap a shard ->
  *      | tap a shard                                  (teal = Homeland, violet = Artifact)
@@ -26,7 +27,22 @@ import { CODEX_ENTRIES, CODEX_SIZE, ArtifactKind } from "./CodexData";
  *   Reset (menu WORLD > Reset, or long-press anywhere) clears everything back to ANCHOR, 0/8.
  *
  * All taps come here first: open Codex card -> Relic menu -> current state.
+ *
+ * HINT STYLES
+ *   normal  bright teal text on the dark purple box (instructions)
+ *   found   white-cyan text on a deep teal box, with a double pulse (Sigil found)
+ *   error   coral red text on a dark maroon box, with a short shake ("That's not a wall")
  */
+
+type HintStyle = "normal" | "found" | "error";
+
+const FOUND_TEXT = new vec4(0.88, 1.0, 0.97, 1);
+const FOUND_BOX = new vec4(0.03, 0.30, 0.31, 0.92);
+const ERROR_TEXT = new vec4(1.0, 0.42, 0.42, 1);      // coral red, readable on dark
+const ERROR_BOX = new vec4(0.30, 0.05, 0.09, 0.92);   // dark maroon
+const PULSE_SECONDS = 0.7;                            // two pulses, 1 -> 1.1 -> 1
+const SHAKE_SECONDS = 0.4;
+const SHAKE_AMOUNT = 0.05;                            // Safe Region units
 
 enum GameState {
     Anchor = "ANCHOR",
@@ -72,6 +88,18 @@ export class AetherLensController extends BaseScriptComponent {
     oldPlacementText: SceneObject;
 
     @input
+    @hint("Main AR camera (the aether dust faces it)")
+    worldCamera: Camera;
+
+    @input
+    @hint("Additive glow material for the aether dust (Codex/AetherDustMaterial)")
+    dustMaterial: Material;
+
+    @input
+    @hint("Soft dot texture for the aether dust (UI/AetherDust)")
+    dustTexture: Texture;
+
+    @input
     @hint("Seconds to hold a finger down (outside the menu) to Reset")
     longPressSeconds: number = 0.8;
 
@@ -92,6 +120,7 @@ export class AetherLensController extends BaseScriptComponent {
     private readonly hints = {
         anchor: "Point at your Aether Sigil card",
         summon: "Tap the card to summon the Codex",
+        found: "Sigil found!\nTap it to summon the Codex",
         select: "Tap a glowing shard to open its Codex card",
         complete: "Codex Complete!",
     };
@@ -103,6 +132,13 @@ export class AetherLensController extends BaseScriptComponent {
         }
         global.touchSystem.touchBlocking = true; // the Lens gets every touch (needed for long-press)
         this.hintSize = this.hintText.size;
+        this.hintST = this.hintText.getSceneObject().getComponent("Component.ScreenTransform");
+        this.hintAnchors = this.hintST ? this.hintST.anchors : null;
+        this.normalText = this.hintText.textFill.color;
+        this.normalBox = this.hintText.backgroundSettings.fill.color;
+        if (this.worldCamera && this.dustMaterial) {
+            this.dust = new AetherDust(this.worldCamera, this.dustMaterial, this.dustTexture);
+        }
         this.hintTimer = this.createEvent("DelayedCallbackEvent");
         this.hintTimer.bind(() => this.onHintTimer());
 
@@ -111,7 +147,13 @@ export class AetherLensController extends BaseScriptComponent {
         this.createEvent("TouchStartEvent").bind((e) => this.onTouchStart(e.getTouchPosition()));
         this.createEvent("TouchMoveEvent").bind((e) => this.onTouchMove(e.getTouchPosition()));
         this.createEvent("TouchEndEvent").bind(() => (this.touchStartTime = -1));
-        this.createEvent("UpdateEvent").bind(() => this.checkLongPress());
+        this.createEvent("UpdateEvent").bind(() => {
+            this.checkLongPress();
+            this.animateHint();
+            if (this.dust) {
+                this.dust.update(getDeltaTime());
+            }
+        });
     }
 
     /** Runs after every script's onAwake, so the other scripts are ready. */
@@ -136,9 +178,13 @@ export class AetherLensController extends BaseScriptComponent {
         this.showHint(this.hints.anchor);
     }
 
-    /** Marker callback: the card came into view. */
+    /** Marker callback: the card came into view - make it obvious with dust and a pulse. */
     private onCardFound() {
         if (this.state === GameState.Anchor) {
+            if (this.dust) {
+                const card = this.marker.getCardPose();
+                this.dust.burst(card.pos, card.rot);
+            }
             this.enterSummon();
         }
     }
@@ -157,7 +203,7 @@ export class AetherLensController extends BaseScriptComponent {
 
     private enterSummon() {
         this.setState(GameState.Summon);
-        this.showHint(this.hints.summon);
+        this.showHint(this.hints.found, 0, false, "found");
     }
 
     /** Tap on the card: the relic pops onto it with the chime, then shards are selectable. */
@@ -241,7 +287,7 @@ export class AetherLensController extends BaseScriptComponent {
         const kind = CODEX_ENTRIES[this.placingIndex].artifact;
         const result = this.placement.placeArtifact(kind, screenPos);
         if (!result.ok) {
-            this.showHint(result.message, 2, true); // then back to the placing instruction
+            this.showHint(result.message, 2, true, "error"); // then back to the placing instruction
             return;
         }
         if (kind === ArtifactKind.Rug) {
@@ -309,6 +355,9 @@ export class AetherLensController extends BaseScriptComponent {
         this.shards.resetAll();
         this.placement.hideAll();
         this.effects.resetAll();
+        if (this.dust) {
+            this.dust.stop();
+        }
         this.marker.reset();     // relic hidden; a visible card is "found" again next frame
         this.menu.setVisible(true);
         this.menu.resetPosition(); // dragged menu goes back to its default spot on the right
@@ -387,6 +436,13 @@ export class AetherLensController extends BaseScriptComponent {
     }
 
     private hintRestoresInstruction = false;
+    private hintST: ScreenTransform;
+    private hintAnchors: Rect | null = null;
+    private normalText: vec4;
+    private normalBox: vec4;
+    private hintStyle: HintStyle = "normal";
+    private hintAnimStart = -1;
+    private dust: AetherDust | null = null;
     private hintSize = 20;
     private hintWanted = false;   // should the hint be showing (ignoring the lore card)?
     private loreOpen = false;     // the Lore card covers the screen; keep the hint hidden
@@ -402,9 +458,10 @@ export class AetherLensController extends BaseScriptComponent {
      * Shows a hint. `seconds` > 0 hides it after that long; with `thenRestore` the current
      * PLACING instruction comes back instead (used for "That's not a wall" messages).
      */
-    private showHint(message: string, seconds: number = 0, thenRestore: boolean = false) {
+    private showHint(message: string, seconds: number = 0, thenRestore: boolean = false, style: HintStyle = "normal") {
         this.hintText.text = message;
         this.hintText.size = this.hintSize;
+        this.setHintStyle(style);
         this.hintWanted = true;
         this.hintText.getSceneObject().enabled = !this.loreOpen;
         this.hintRestoresInstruction = thenRestore;
@@ -415,6 +472,47 @@ export class AetherLensController extends BaseScriptComponent {
         this.hintWanted = false;
         this.hintText.getSceneObject().enabled = false;
         this.hintTimer.reset(1e6);
+    }
+
+    /** Colours for the hint box; "found" and "error" also start their pulse / shake. */
+    private setHintStyle(style: HintStyle) {
+        this.hintStyle = style;
+        const text = style === "found" ? FOUND_TEXT : style === "error" ? ERROR_TEXT : this.normalText;
+        const box = style === "found" ? FOUND_BOX : style === "error" ? ERROR_BOX : this.normalBox;
+        this.hintText.textFill.color = text;
+        this.hintText.backgroundSettings.fill.color = box;
+        this.hintAnimStart = style === "normal" ? -1 : getTime();
+        this.applyHintMotion(1, 0);
+    }
+
+    /** Pulse ("found") or shake ("error"); the hint is back at rest when it ends. */
+    private animateHint() {
+        if (this.hintAnimStart < 0) {
+            return;
+        }
+        const age = getTime() - this.hintAnimStart;
+        if (this.hintStyle === "found") {
+            const t = Math.min(1, age / PULSE_SECONDS);
+            this.applyHintMotion(1 + 0.1 * Math.abs(Math.sin(t * Math.PI * 2)), 0);
+            if (t >= 1) {
+                this.hintAnimStart = -1;
+            }
+        } else {
+            const t = Math.min(1, age / SHAKE_SECONDS);
+            this.applyHintMotion(1, SHAKE_AMOUNT * Math.sin(age * 55) * (1 - t));
+            if (t >= 1) {
+                this.hintAnimStart = -1;
+            }
+        }
+    }
+
+    private applyHintMotion(scale: number, shiftX: number) {
+        if (!this.hintST || !this.hintAnchors) {
+            return;
+        }
+        this.hintST.scale = new vec3(scale, scale, 1);
+        const a = this.hintAnchors;
+        this.hintST.anchors = Rect.create(a.left + shiftX, a.right + shiftX, a.bottom, a.top);
     }
 
     private onHintTimer() {
