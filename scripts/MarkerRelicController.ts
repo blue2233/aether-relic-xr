@@ -8,9 +8,16 @@
  *     within the card's area)
  *   - summon(): the relic (af_artifact, with its shard ring) appears sitting on the card
  *     with a short scale-up "pop".
- *   - While the card is tracked, the summoned relic smoothly follows it. When the card is
- *     lost, the relic stays exactly where it was last seen (World tracking holds it), because
- *     it is not parented to the marker.
+ *   - LEVEL LOCK: the marker is only trusted for POSITION and YAW (which way the card's
+ *     bottom edge points, flattened onto the floor). The relic's up axis is always world up
+ *     (World Device Tracking keeps world +Y = gravity up), so a misjudged marker angle can
+ *     never tilt the relic or its shard ring (the ring is a child of the relic).
+ *   - SMOOTHING: the marker pose is low-pass filtered (poseSmoothing, ~0.15 per frame) so
+ *     tracking jitter doesn't wobble anything.
+ *   - WORLD ANCHOR: on summon the relic is pinned to a fixed world pose at that spot and
+ *     stops following the marker. It only re-syncs if the (smoothed) marker drifts more than
+ *     resyncDistance (~5 cm) from where it was anchored - then it glides to the new spot.
+ *     When the card is lost the relic simply stays at its anchor.
  *
  * Marker axes: the image lies in the marker object's local X/Y plane (X = right, Y = top
  * edge of the card) and local +Z points out of the printed face. So on a table, "card up"
@@ -47,8 +54,12 @@ export class MarkerRelicController extends BaseScriptComponent {
     popDuration: number = 0.4;
 
     @input
-    @hint("0..1: how quickly the relic follows the card each frame (lower = smoother, laggier)")
-    followSmoothing: number = 0.5;
+    @hint("0..1: how much of the new marker pose is taken each frame (lower = steadier, laggier)")
+    poseSmoothing: number = 0.15;
+
+    @input
+    @hint("Once summoned, the relic only moves if the card moves further than this, in cm")
+    resyncDistance: number = 5;
 
     @input
     @hint("A tap counts as 'on the card' within this distance of the card's centre, in cm")
@@ -74,6 +85,13 @@ export class MarkerRelicController extends BaseScriptComponent {
     private baseLift = 1;           // relic pivot -> base distance at card scale (cm)
     private simulatedCard: { pos: vec3; rot: quat } | null = null; // editor-only test card
 
+    // Level lock + smoothing + world anchor
+    private smoothPos: vec3 | null = null;  // smoothed marker centre (world)
+    private smoothRot: quat | null = null;  // smoothed LEVEL rotation: yaw only, up = world up
+    private anchorPos: vec3 | null = null;  // where the relic is pinned (world)
+    private anchorRot: quat | null = null;
+    private anchorMarkerPos: vec3 | null = null; // smoothed marker centre when last anchored
+
     onAwake() {
         if (!this.markerTracking || !this.relic || !this.relicMesh || !this.camera) {
             print("MarkerRelicController: a required input is missing; check the Inspector.");
@@ -94,6 +112,8 @@ export class MarkerRelicController extends BaseScriptComponent {
         this.summoned = false;
         this.wasTracking = false;
         this.popStart = -1;
+        this.smoothPos = this.smoothRot = null;
+        this.clearAnchor();
         this.relic.enabled = false;
     }
 
@@ -111,7 +131,9 @@ export class MarkerRelicController extends BaseScriptComponent {
             return false;
         }
         this.summoned = true;
-        this.followCard(1); // snap straight onto the card before showing it
+        this.updateSmoothedPose(true);   // start from the current reading, no lag
+        this.setAnchor();                // pin it to this spot in the world
+        this.moveRelicToAnchor(1);       // snap straight there before showing it
         this.relic.getTransform().setLocalScale(vec3.zero());
         this.relic.enabled = true;
         this.popStart = getTime();
@@ -181,31 +203,83 @@ export class MarkerRelicController extends BaseScriptComponent {
         if (tracking && !this.wasTracking) {
             this.onCardFound();
         } else if (!tracking && this.wasTracking) {
-            this.onCardLost(); // the relic keeps its last world position
+            this.onCardLost(); // the relic keeps its anchor
+        }
+
+        if (tracking) {
+            this.updateSmoothedPose(!this.wasTracking); // fresh sighting: no lag from an old pose
+            // Only re-anchor if the card has really moved, not for jitter.
+            if (this.summoned && this.anchorMarkerPos && this.smoothPos.distance(this.anchorMarkerPos) > this.resyncDistance) {
+                this.setAnchor();
+            }
         }
         this.wasTracking = tracking;
 
-        if (tracking && this.summoned) {
-            this.followCard(this.popStart >= 0 ? 1 : this.followSmoothing);
+        if (this.summoned) {
+            this.moveRelicToAnchor(this.popStart >= 0 ? 1 : this.poseSmoothing);
         }
         this.updatePop();
     }
 
     /**
-     * Moves the relic onto the card: base resting on the printed face, standing along the
-     * card's normal, facing the card's bottom edge. `t` blends from the current pose (0..1).
+     * Low-pass filters the marker pose: position, and a LEVEL rotation (yaw from the marker,
+     * up = world up). `snap` takes the new reading as-is.
      */
-    private followCard(t: number) {
+    private updateSmoothedPose(snap: boolean) {
         const card = this.getCardPose();
-        const cardUp = card.rot.multiplyVec3(new vec3(0, 0, 1));    // out of the printed face
-        const cardDown = card.rot.multiplyVec3(new vec3(0, -1, 0)); // toward the bottom edge
+        const level = this.levelRotation(card.rot, card.pos);
+        if (snap || !this.smoothPos || !this.smoothRot) {
+            this.smoothPos = card.pos;
+            this.smoothRot = level;
+            return;
+        }
+        const k = MathUtils.clamp(this.poseSmoothing, 0.01, 1);
+        this.smoothPos = vec3.lerp(this.smoothPos, card.pos, k);
+        this.smoothRot = quat.slerp(this.smoothRot, level, k);
+    }
 
-        const targetPos = card.pos.add(cardUp.uniformScale(this.baseLift + this.hoverGap));
-        const targetRot = quat.lookAt(cardDown, cardUp); // relic +Z faces the viewer, +Y = card up
+    /**
+     * The marker's rotation with pitch and roll thrown away: up is world up, and the relic
+     * faces the card's bottom edge flattened onto the floor. If the card is held nearly
+     * upright (bottom edge points down), the card's face direction is used instead, and as a
+     * last resort the direction toward the camera.
+     */
+    private levelRotation(cardRot: quat, cardPos: vec3): quat {
+        const up = vec3.up(); // World Device Tracking: +Y is gravity up
+        const flatten = (v: vec3) => v.sub(up.uniformScale(v.dot(up)));
+        let facing = flatten(cardRot.multiplyVec3(new vec3(0, -1, 0)));   // toward the bottom edge
+        if (facing.length < 0.2) {
+            facing = flatten(cardRot.multiplyVec3(new vec3(0, 0, 1)));    // upright card: its face
+        }
+        if (facing.length < 0.2) {
+            facing = flatten(this.camera.getTransform().getWorldPosition().sub(cardPos)); // toward the viewer
+        }
+        if (facing.length < 1e-4) {
+            facing = vec3.forward();
+        }
+        return quat.lookAt(facing.normalize(), up); // relic +Z faces the viewer, +Y = world up
+    }
 
+    /** Pins the relic to the current smoothed marker pose (base on the card, level). */
+    private setAnchor() {
+        const up = vec3.up();
+        this.anchorMarkerPos = this.smoothPos;
+        this.anchorPos = this.smoothPos.add(up.uniformScale(this.baseLift + this.hoverGap));
+        this.anchorRot = this.smoothRot;
+    }
+
+    private clearAnchor() {
+        this.anchorPos = this.anchorRot = this.anchorMarkerPos = null;
+    }
+
+    /** Eases the relic toward its anchor (t = 1 snaps). At rest it simply sits on it. */
+    private moveRelicToAnchor(t: number) {
+        if (!this.anchorPos || !this.anchorRot) {
+            return;
+        }
         const relicT = this.relic.getTransform();
-        relicT.setWorldPosition(vec3.lerp(relicT.getWorldPosition(), targetPos, t));
-        relicT.setWorldRotation(quat.slerp(relicT.getWorldRotation(), targetRot, t));
+        relicT.setWorldPosition(vec3.lerp(relicT.getWorldPosition(), this.anchorPos, t));
+        relicT.setWorldRotation(quat.slerp(relicT.getWorldRotation(), this.anchorRot, t));
     }
 
     /** Scale-up pop: 0 -> slightly too big -> card size ("ease out back"). */
