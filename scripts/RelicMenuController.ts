@@ -1,5 +1,6 @@
 import { RelicEffects } from "./RelicEffects";
 import { UiFactory, UiColors, UiRect } from "./UiFactory";
+import { TouchIndicator } from "./TouchIndicator";
 
 /**
  * RelicMenuController
@@ -25,6 +26,14 @@ import { UiFactory, UiColors, UiRect } from "./UiFactory";
  *   its "Open Lore Site" pill swaps the map for a big QR code that another phone can scan.
  *   The pill has its own branch in handleTap, checked before "close", so tapping it never
  *   closes the card; taps anywhere else on the card are swallowed too.
+ *
+ * TAPS BUTTON
+ *   A separate round icon button at the top right (under Snapchat's flip-camera icon, above
+ *   the Relic button) turns the touch indicator (TouchIndicator: teal rings + dot under the
+ *   finger, for demo recordings) ON or OFF. ON: bright finger icon, thin teal ring. OFF:
+ *   finger greyed to 40% with a red circle-slash, grey ring. Taps on it bounce it and are
+ *   consumed here, so they never reach the relic, shards, placement or the ripple. Reset
+ *   leaves the ON/OFF state alone.
  *
  * DRAGGING
  *   Everything lives inside one "MenuFrame" ScreenTransform. Pressing the ⋮⋮ handle and
@@ -60,6 +69,17 @@ type MenuTab = {
 };
 
 type Side = "left" | "right";
+
+// ---------- Taps button: screen position (fractions of the screen) and look ----------
+const TAPS_CENTER = new vec2(0.91, 0.185);     // top right, under the flip-camera icon, above the Relic button
+const TAPS_DIAMETER = 44 / 390;                // ~44 pt on a 390 pt wide phone, fraction of screen width
+const TAPS_BG = new vec4(0.05, 0.04, 0.08, 0.55);
+const TAPS_TEAL = new vec4(0.18, 0.902, 0.839, 1);
+const TAPS_FINGER_ON = new vec4(0.88, 1.0, 0.97, 1);
+const TAPS_FINGER_OFF = new vec4(0.75, 0.75, 0.78, 0.4);
+const TAPS_RING_OFF = new vec4(0.55, 0.55, 0.6, 0.85);
+const TAPS_CANCEL = new vec4(0.92, 0.36, 0.36, 0.95);
+const TAPS_BOUNCE_SECONDS = 0.15;
 
 // ---------- Layout for the default (right side) spot, in Safe Render Region units ----------
 const FULL: UiRect = { left: -1, right: 1, bottom: -1, top: 1 };
@@ -162,6 +182,18 @@ export class RelicMenuController extends BaseScriptComponent {
     glowTexture: Texture;
 
     @input
+    @hint("Pointing-finger tap icon for the Taps button (UI/TapFinger)")
+    tapFingerTexture: Texture;
+
+    @input
+    @hint("Circle-slash 'off' symbol for the Taps button (UI/TapCancel)")
+    tapCancelTexture: Texture;
+
+    @input
+    @hint("Thin ring outline: the Taps button ring and the touch rings (UI/RingOutline)")
+    ringOutlineTexture: Texture;
+
+    @input
     @hint("The effects the MOTION and LOOK buttons switch")
     effects: RelicEffects;
 
@@ -206,6 +238,12 @@ export class RelicMenuController extends BaseScriptComponent {
     private resetFlashTimer: DelayedCallbackEvent;
     private resetFlashing = false;
 
+    // ---------- Taps button + touch indicator ----------
+    private tapsOn = true;                  // kept through Reset
+    private taps: { obj: SceneObject; st: ScreenTransform; ring: Image; finger: Image; cancel: SceneObject } | null = null;
+    private tapsBounceStart = -1;
+    private touchFx: TouchIndicator | null = null;
+
     // ---------- Drag state ----------
     private side: Side = "right";
     private frameCenter = new vec2(0, 0);   // current frame centre (Safe Region units)
@@ -236,12 +274,41 @@ export class RelicMenuController extends BaseScriptComponent {
         this.resetPosition();
         this.setExpanded(false);
 
-        // Drag input (taps arrive separately through handleTap).
-        this.createEvent("TouchStartEvent").bind((e) => this.onDragStart(e.getTouchPosition()));
-        this.createEvent("TouchMoveEvent").bind((e) => this.onDragMove(e.getTouchPosition()));
-        this.createEvent("TouchEndEvent").bind(() => this.onDragEnd());
+        // Touch input: drag the menu, and feed the touch indicator (taps arrive via handleTap).
+        this.createEvent("TouchStartEvent").bind((e) => {
+            const pos = e.getTouchPosition();
+            this.onDragStart(pos);
+            if (this.touchFx && !this.isOnTapsButton(pos)) {
+                this.touchFx.touchStart(pos); // its own button never makes a ripple
+            }
+        });
+        this.createEvent("TouchMoveEvent").bind((e) => {
+            this.onDragMove(e.getTouchPosition());
+            if (this.touchFx) {
+                this.touchFx.touchMove(e.getTouchPosition());
+            }
+        });
+        this.createEvent("TouchEndEvent").bind(() => {
+            this.onDragEnd();
+            if (this.touchFx) {
+                this.touchFx.touchEnd();
+            }
+        });
+        // After every script's onAwake: the screen layout is known and the indicator is the
+        // last UI created, so it draws on top of everything.
+        this.createEvent("OnStartEvent").bind(() => {
+            this.buildTapsButton();
+            if (this.ringOutlineTexture && this.circle) {
+                this.touchFx = new TouchIndicator(this.ui, this.uiParent, this.ringOutlineTexture, this.circle, () => this.uiCamera.aspect);
+                this.touchFx.setEnabled(this.tapsOn);
+            }
+        });
         this.createEvent("UpdateEvent").bind(() => {
             this.updateSnap();
+            this.updateTapsBounce();
+            if (this.touchFx) {
+                this.touchFx.update();
+            }
             this.breatheRelicGlow();
         });
     }
@@ -301,6 +368,12 @@ export class RelicMenuController extends BaseScriptComponent {
         if (this.dragging || getTime() - this.lastDragEnd < DRAG_TAP_GUARD) {
             return true;
         }
+        // Taps button: toggle the touch indicator; the tap goes no further.
+        if (this.isOnTapsButton(screenPos)) {
+            this.setTapsOn(!this.tapsOn);
+            this.tapsBounceStart = getTime();
+            return true;
+        }
         if (this.hidden) {
             return false;
         }
@@ -346,7 +419,8 @@ export class RelicMenuController extends BaseScriptComponent {
         if (this.loreCard.enabled || this.dragging) {
             return true;
         }
-        return !this.hidden && (this.handle.st.containsScreenPoint(screenPos)
+        return !this.hidden && (this.isOnTapsButton(screenPos)
+            || this.handle.st.containsScreenPoint(screenPos)
             || this.menuButton.st.containsScreenPoint(screenPos)
             || (this.expanded && this.panelST.containsScreenPoint(screenPos)));
     }
@@ -752,5 +826,67 @@ export class RelicMenuController extends BaseScriptComponent {
         this.ui.addImage(pill, this.roundedRect, UiColors.teal);
         const text = this.ui.addLabel(pill, SITE_PILL_LABEL, 15);
         this.sitePill = { st: UiFactory.getScreenTransform(pill), text };
+    }
+
+    // =====================================================================
+    // Taps button (touch indicator ON / OFF)
+    // =====================================================================
+
+    private isOnTapsButton(screenPos: vec2): boolean {
+        return !!this.taps && !this.hidden && !this.loreCard.enabled && this.taps.st.containsScreenPoint(screenPos);
+    }
+
+    private setTapsOn(on: boolean) {
+        this.tapsOn = on;
+        if (this.touchFx) {
+            this.touchFx.setEnabled(on);
+        }
+        if (!this.taps) {
+            return;
+        }
+        this.taps.ring.mainPass.baseColor = on ? TAPS_TEAL : TAPS_RING_OFF;
+        this.taps.finger.mainPass.baseColor = on ? TAPS_FINGER_ON : TAPS_FINGER_OFF;
+        this.taps.cancel.enabled = !on;
+    }
+
+    /** Quick press bounce: 1.0 -> 0.9 -> 1.0 over 0.15 s. */
+    private updateTapsBounce() {
+        if (!this.taps || this.tapsBounceStart < 0) {
+            return;
+        }
+        const t = Math.min(1, (getTime() - this.tapsBounceStart) / TAPS_BOUNCE_SECONDS);
+        const s = 1 - 0.1 * Math.sin(Math.PI * t);
+        this.taps.st.scale = new vec3(s, s, 1);
+        if (t >= 1) {
+            this.tapsBounceStart = -1;
+            this.taps.st.scale = vec3.one();
+        }
+    }
+
+    /**
+     * Round button fixed at the top right (not in the draggable frame). Built in OnStart so
+     * the screen-to-UI conversion is valid; lives under the menu root so it hides with the
+     * menu (Codex card, Lore card, video, teaser).
+     */
+    private buildTapsButton() {
+        if (!this.tapFingerTexture || !this.circle) {
+            return;
+        }
+        const halfW = TAPS_DIAMETER / 2;
+        const halfH = halfW * this.uiCamera.aspect;
+        const a = this.rootST.screenPointToLocalPoint(new vec2(TAPS_CENTER.x - halfW, TAPS_CENTER.y - halfH));
+        const b = this.rootST.screenPointToLocalPoint(new vec2(TAPS_CENTER.x + halfW, TAPS_CENTER.y + halfH));
+        const obj = this.ui.createObject("TapsButton", this.root, { left: a.x, right: b.x, bottom: b.y, top: a.y });
+        this.ui.addImage(obj, this.circle, TAPS_BG, StretchMode.Fit);
+
+        const ringObj = this.ui.createObject("TapsRing", obj, FULL);
+        const ring = this.ui.addImage(ringObj, this.ringOutlineTexture || this.circle, TAPS_TEAL, StretchMode.Fit);
+        const fingerObj = this.ui.createObject("TapsFinger", obj, { left: -0.62, right: 0.62, bottom: -0.62, top: 0.62 });
+        const finger = this.ui.addImage(fingerObj, this.tapFingerTexture, TAPS_FINGER_ON, StretchMode.Fit);
+        const cancel = this.ui.createObject("TapsCancel", obj, { left: -0.74, right: 0.74, bottom: -0.74, top: 0.74 });
+        this.ui.addImage(cancel, this.tapCancelTexture || this.circle, TAPS_CANCEL, StretchMode.Fit);
+
+        this.taps = { obj, st: UiFactory.getScreenTransform(obj), ring, finger, cancel };
+        this.setTapsOn(this.tapsOn);
     }
 }
