@@ -12,14 +12,18 @@ import { AetherDust } from "./AetherDust";
  * ========================================================
  *   Scan -> Place -> Interact -> Collect, as a simple state machine:
  *
- *   ANCHOR   "Point at your Aether Sigil card"        wait for the printed 10 cm card
- *      | card found -> aether dust puffs out of the Sigil, hint pulses
- *   SUMMON   "Sigil found! Tap it to summon..."       tap the card ->
+ *   ANCHOR   "Point at the Aether Sigil card..."      wait for the printed 10 cm card
+ *      | card in view
+ *   SIGHTING "Something's in frame. Center it."       camera image shakes, harder as the
+ *      | card held near the centre                    card nears the centre of the screen
+ *      |   -> aether dust puffs out of the Sigil, hint pulses
+ *   SUMMON   "Sigil found... Tap it to summon..."     tap the card ->
  *      | tap on card                                  relic pops onto the card + chime
  *   SELECT   8 glowing shards circle the relic        tap a shard ->
  *      | tap a shard                                  (teal = Homeland, violet = Artifact)
  *   CARD     floating Codex card above the relic      Homeland: Collect / Close
  *      | "Place" on an Artifact card                  Artifact: Place   / Close
+ *   VIDEO    (sword only) transformation video       plays once; tap = skip
  *   PLACING  "Tap a wall..." / "Tap the floor..."     tap -> sword on wall / rug on floor
  *      | collected or placed -> shard dims + check, counter "Collected N/8"
  *   COMPLETE "Codex Complete!" + warm Light + fanfare when N = 8
@@ -44,11 +48,18 @@ const PULSE_SECONDS = 0.7;                            // two pulses, 1 -> 1.1 ->
 const SHAKE_SECONDS = 0.4;
 const SHAKE_AMOUNT = 0.05;                            // Safe Region units
 
+// Sighting: the card must be in view this long, and held near the centre this long.
+const SIGHT_MIN_SECONDS = 1.2;
+const CENTER_DWELL_SECONDS = 0.4;
+const CENTER_BOX = new vec2(0.18, 0.16);              // half-size of the "centred" area, screen 0..1
+
 enum GameState {
     Anchor = "ANCHOR",
+    Sighting = "SIGHTING",
     Summon = "SUMMON",
     Select = "SELECT",
     Card = "CARD",
+    Video = "VIDEO",
     Placing = "PLACING",
     Complete = "COMPLETE",
 }
@@ -100,6 +111,18 @@ export class AetherLensController extends BaseScriptComponent {
     dustTexture: Texture;
 
     @input
+    @hint("Post effect that shakes the camera image while the Sigil is being centred (Camera Object > ScreenShake)")
+    screenShake: SceneObject;
+
+    @input
+    @hint("Shake strength at the centre (the Shake material's amplitude)")
+    shakeStrength: number = 4;
+
+    @input
+    @hint("Shadowglint transformation video, played after 'Place' on the sword card (Codex/Video)")
+    swordVideo: Texture;
+
+    @input
     @hint("Seconds to hold a finger down (outside the menu) to Reset")
     longPressSeconds: number = 0.8;
 
@@ -119,6 +142,7 @@ export class AetherLensController extends BaseScriptComponent {
 
     private readonly hints = {
         anchor: "Point at the Aether Sigil card.\nIt won't find itself.",
+        sighting: "Something's in frame.\nCenter it. I'll wait.",
         summon: "Tap the card to summon the Codex.\nIt's been waiting. Patiently. Mostly.",
         found: "Sigil found. Well done, you.\nTap it to summon the Codex.",
         select: "Tap a glowing shard.\nYes, the glowing ones.",
@@ -136,6 +160,11 @@ export class AetherLensController extends BaseScriptComponent {
         this.hintAnchors = this.hintST ? this.hintST.anchors : null;
         this.normalText = this.hintText.textFill.color;
         this.normalBox = this.hintText.backgroundSettings.fill.color;
+        if (this.screenShake) {
+            const fx = this.screenShake.getComponent("Component.PostEffectVisual");
+            this.shakePass = fx ? fx.mainPass : null;
+            this.screenShake.enabled = false;
+        }
         if (this.worldCamera && this.dustMaterial) {
             this.dust = new AetherDust(this.worldCamera, this.dustMaterial, this.dustTexture);
         }
@@ -150,6 +179,7 @@ export class AetherLensController extends BaseScriptComponent {
         this.createEvent("UpdateEvent").bind(() => {
             this.checkLongPress();
             this.animateHint();
+            this.updateSighting(getDeltaTime());
             if (this.dust) {
                 this.dust.update(getDeltaTime());
             }
@@ -178,23 +208,98 @@ export class AetherLensController extends BaseScriptComponent {
         this.showHint(this.hints.anchor);
     }
 
-    /** Marker callback: the card came into view - make it obvious with dust and a pulse. */
+    /** Marker callback: the card came into view. Don't celebrate yet - get it centred first. */
     private onCardFound() {
         if (this.state === GameState.Anchor) {
-            if (this.dust) {
-                const card = this.marker.getCardPose();
-                this.dust.burst(card.pos, card.rot);
-            }
-            this.enterSummon();
+            this.enterSighting();
         }
     }
 
     /** Marker callback: the card left the view. Before summoning, go back to "point at". */
     private onCardLost() {
-        if (this.state === GameState.Summon) {
+        if (this.state === GameState.Sighting || this.state === GameState.Summon) {
+            this.setShake(0);
             this.enterAnchor();
         }
         // After summoning, the relic simply stays where it was last seen.
+    }
+
+    // =====================================================================
+    // STEP 1b - SIGHTING (card in view, not yet centred)
+    // =====================================================================
+
+    private sightTime = 0;
+    private centerTime = 0;
+    private shakePass: Pass | null = null;
+
+    private enterSighting() {
+        this.setState(GameState.Sighting);
+        this.sightTime = 0;
+        this.centerTime = 0;
+        this.showHint(this.hints.sighting);
+    }
+
+    /**
+     * While SIGHTING: shake the camera image (stronger as the card nears the centre). Once the
+     * card has been in view for a moment AND held near the centre, the Sigil is "found".
+     */
+    private updateSighting(dt: number) {
+        if (this.state !== GameState.Sighting) {
+            return;
+        }
+        this.sightTime += dt;
+        const screen = this.cardScreenPosition();
+        if (!screen) {
+            this.centerTime = 0;
+            this.setShake(0.35);
+            return;
+        }
+        const dx = Math.abs(screen.x - 0.5);
+        const dy = Math.abs(screen.y - 0.5);
+        const closeness = MathUtils.clamp(1 - Math.sqrt(dx * dx + dy * dy) / 0.5, 0, 1);
+        this.setShake(0.35 + 0.65 * closeness);
+
+        const centred = dx < CENTER_BOX.x && dy < CENTER_BOX.y;
+        this.centerTime = centred ? this.centerTime + dt : 0;
+        if (this.sightTime >= SIGHT_MIN_SECONDS && this.centerTime >= CENTER_DWELL_SECONDS) {
+            this.sigilFound();
+        }
+    }
+
+    /** Centred: stop shaking, dust puffs out of the Sigil, "Sigil found" pulses. */
+    private sigilFound() {
+        this.setShake(0);
+        if (this.dust) {
+            const card = this.marker.getCardPose();
+            this.dust.burst(card.pos, card.rot);
+        }
+        this.enterSummon();
+    }
+
+    /** The card's centre on screen (0..1, top-left origin), or null if it's behind the camera. */
+    private cardScreenPosition(): vec2 | null {
+        if (!this.worldCamera) {
+            return new vec2(0.5, 0.5);
+        }
+        const card = this.marker.getCardPose();
+        const camT = this.worldCamera.getTransform();
+        const forward = camT.getWorldRotation().multiplyVec3(new vec3(0, 0, -1));
+        if (card.pos.sub(camT.getWorldPosition()).dot(forward) <= 0) {
+            return null;
+        }
+        return this.worldCamera.worldSpaceToScreenSpace(card.pos);
+    }
+
+    /** 0 = off; otherwise the fraction of shakeStrength. */
+    private setShake(amount: number) {
+        if (!this.screenShake) {
+            return;
+        }
+        this.screenShake.enabled = amount > 0;
+        if (this.shakePass && amount > 0) {
+            this.shakePass.uniAmplX = this.shakeStrength * amount;
+            this.shakePass.uniAmplY = this.shakeStrength * amount;
+        }
     }
 
     // =====================================================================
@@ -316,11 +421,33 @@ export class AetherLensController extends BaseScriptComponent {
     // STEP 5 - PLACING (artifacts)
     // =====================================================================
 
-    /** "Place" on the Sword / Rug card: wait for a tap on a wall / the floor. */
+    /**
+     * "Place" on an artifact card. The sword first plays its transformation video (tap to
+     * skip); the rug goes straight to placement.
+     */
     private startPlacing(index: number) {
+        if (CODEX_ENTRIES[index].artifact === ArtifactKind.Sword && this.swordVideo) {
+            this.playSwordVideo(index);
+        } else {
+            this.beginPlacing(index);
+        }
+    }
+
+    /** Wait for a tap on a wall / the floor. */
+    private beginPlacing(index: number) {
         this.placingIndex = index;
+        this.menu.setVisible(true);
         this.setState(GameState.Placing);
         this.showHint(this.placement.instructionFor(CODEX_ENTRIES[index].artifact));
+    }
+
+    /** Full-screen transformation video; menu, counter and hints hide until it ends. */
+    private playSwordVideo(index: number) {
+        this.setState(GameState.Video);
+        this.menu.setVisible(false);
+        this.hideHint();
+        this.effects.playChime();
+        this.card.playVideo(this.swordVideo, () => this.beginPlacing(index));
     }
 
     /** Tap while PLACING: try the real-world placement; on success the artifact is collected. */
@@ -391,6 +518,8 @@ export class AetherLensController extends BaseScriptComponent {
         this.collected = CODEX_ENTRIES.map(() => false);
         this.openIndex = this.placingIndex = -1;
         this.missStreak = 0;
+        this.card.stopVideo(); // can play again next time
+        this.setShake(0);
         this.card.hide();
         this.card.resetChecks();
         this.card.setChecksVisible(false);
@@ -416,6 +545,10 @@ export class AetherLensController extends BaseScriptComponent {
     private routeTap(screenPos: vec2) {
         if (this.longPressFired) {
             this.longPressFired = false; // this tap ended a long-press (Reset)
+            return;
+        }
+        if (this.state === GameState.Video) {
+            this.card.skipVideo(); // tap = skip straight to placement
             return;
         }
         if (this.state === GameState.Card) {
@@ -448,7 +581,7 @@ export class AetherLensController extends BaseScriptComponent {
 
     private onTouchStart(pos: vec2) {
         this.longPressFired = false;
-        const onUi = this.menu.isUiPoint(pos) || this.card.isOpen;
+        const onUi = this.menu.isUiPoint(pos) || this.card.isOpen || this.card.isVideoPlaying;
         this.touchStartTime = onUi ? -1 : getTime();
         this.touchStartPos = pos;
     }

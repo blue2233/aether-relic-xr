@@ -35,24 +35,35 @@ import { UiFactory, UiColors, UiRect } from "./UiFactory";
 
 export type CardTapResult = "primary" | "close" | "inside" | "outside";
 
-// Card size as fractions of the whole phone screen: 90% wide, 12% clear at the top
-// (Snapchat's icons) and 18% at the bottom (the carousel). Converted to UI units on open.
-const CARD_SCREEN = { left: 0.05, right: 0.95, top: 0.12, bottom: 0.82 };
+// Card size as fractions of the whole phone screen: 88% wide, top edge 21% down (just below
+// Snapchat's bug icon), bottom edge 22% up (just above the capture button). Converted to UI
+// units on open.
+const CARD_SCREEN = { left: 0.06, right: 0.94, top: 0.21, bottom: 0.78 };
 const CARD_PAD_X = 0.06;           // inner padding, card units
 const DIM_COLOR = new vec4(0, 0, 0, 0.5);
 const POP_SECONDS = 0.2;
 const POP_START_SCALE = 0.9;
 
-// Vertical layout inside the card (card units, top = 1). The image height is worked out from
-// the screen's aspect so it is always 3:2 and full width.
-const TAG_TOP = 0.95, TAG_BOTTOM = 0.85;
-const TITLE_TOP = 0.84, TITLE_BOTTOM = 0.66;
-const IMAGE_TOP = 0.64;
-const BUTTON_TOP = -0.68, BUTTON_BOTTOM = -0.94;
-const TITLE_SIZE = 44;             // 2x the old 22
-const LORE_SIZE = 21;              // ~1.6x the old 13
-const LORE_LINE_SPACING = 1.3;
+// Vertical layout inside the card (card units, top = 1). The image gets whatever height is
+// left after the lore's minimum: 3:2 full width if it fits, else 16:9 full width, else 16:9
+// centred and narrower (see layoutOverlay).
+const TAG_TOP = 0.95, TAG_BOTTOM = 0.86;
+const TITLE_TOP = 0.85, TITLE_BOTTOM = 0.70;
+const IMAGE_TOP = 0.68;
+const BUTTON_TOP = -0.70, BUTTON_BOTTOM = -0.95;
+const LORE_MIN_HEIGHT = 0.44;      // card units kept for the lore text
+const TITLE_SIZE = 38;
+const LORE_SIZE = 19;              // ~90% of the previous 21
+const LORE_LINE_SPACING = 1.2;
 const BUTTON_TEXT_SIZE = 24;
+
+// Sword transformation video: 16:9 panel, 95% of the screen width, centred.
+const VIDEO_WIDTH = 0.95;
+const VIDEO_ASPECT = 16 / 9;
+const VIDEO_FADE_IN = 0.2;
+const VIDEO_FADE_OUT = 0.3;
+const VIDEO_DIM = new vec4(0, 0, 0, 0.75);
+const VIDEO_END_MARGIN = 0.1;      // seconds before the end that count as "ended"
 
 // "Collected N/8" counter card, bottom-left corner (below the hint, clear of the right-side menu).
 const COUNTER_RECT: UiRect = { left: -0.94, right: -0.36, bottom: -0.97, top: -0.84 };
@@ -130,6 +141,21 @@ export class CodexCardView extends BaseScriptComponent {
     private fadeImages: { image: Image; color: vec4 }[] = [];
     private fadeTexts: { text: Text; color: vec4 }[] = [];
     private popStart = -1;
+    private imageAspect = 1.5;           // aspect of the image slot chosen by layoutOverlay
+
+    // Sword transformation video overlay.
+    private video: SceneObject;
+    private videoDim: Image;
+    private videoImage: Image;
+    private videoST: ScreenTransform;
+    private videoDimST: ScreenTransform;
+    private videoControl: VideoTextureProvider | null = null;
+    private videoActive = false;        // between playVideo() and the end of the fade-out
+    private videoOnEnd: (() => void) | null = null;
+    private videoFadeStart = -1;
+    private videoFadingOut = false;
+    private videoDoneHooked: VideoTextureProvider[] = [];
+    private lastVideoTime = 0;
 
     onAwake() {
         if (!this.uiParent || !this.uiCamera || !this.worldCamera || !this.shards || !this.imageMaterial) {
@@ -141,11 +167,14 @@ export class CodexCardView extends BaseScriptComponent {
         this.rootST = UiFactory.getScreenTransform(this.root);
         this.buildChecks();
         this.buildCounter();
-        this.buildOverlay();   // built last so it draws on top of the ticks and the counter
+        this.buildOverlay();   // built after the ticks and counter so it draws on top of them
         this.overlay.enabled = false;
+        this.buildVideoOverlay();
+        this.video.enabled = false;
         this.createEvent("LateUpdateEvent").bind(() => {
             this.placeChecks();
             this.updatePop();
+            this.updateVideoFade();
         });
     }
 
@@ -166,7 +195,7 @@ export class CodexCardView extends BaseScriptComponent {
         this.picture.mainPass.baseTex = texture;
         // Landscape art (4:3) fills the full-width 3:2 slot with a light crop; square art
         // (sword, rug) is fitted whole so the object is never cut off.
-        const landscape = texture && texture.getWidth() / texture.getHeight() >= 1.3;
+        const landscape = texture && texture.getWidth() / texture.getHeight() >= 1.3; // 4:3 art is cropped to the slot
         this.picture.stretchMode = landscape ? StretchMode.FillAndCut : StretchMode.Fit;
         this.picture.mainPass.baseColor = this.cardImages[index] ? new vec4(1, 1, 1, 1) : new vec4(1, 0.96, 0.86, 0.35);
 
@@ -226,7 +255,7 @@ export class CodexCardView extends BaseScriptComponent {
     public setCounter(collected: number, total: number, visible: boolean) {
         this.counterText.text = `Collected ${collected}/${total}`;
         this.counterWanted = visible;
-        this.counter.enabled = visible && !this.isOpen;
+        this.counter.enabled = visible && !this.isOpen && !this.videoActive;
     }
 
     /** Checkmarks are only shown while the relic (and so its shards) is on the card. */
@@ -241,7 +270,7 @@ export class CodexCardView extends BaseScriptComponent {
     private placeChecks() {
         const halfX = 0.065;
         const halfY = halfX * this.worldCamera.aspect; // keep the tick round on a tall screen
-        const show = this.checksVisible && !this.isOpen;
+        const show = this.checksVisible && !this.isOpen && !this.videoActive;
         for (let i = 0; i < this.checks.length; i++) {
             const check = this.checks[i];
             const local = show && this.checked[i] ? this.toSafeRegion(this.shards.getShardWorldPosition(i)) : null;
@@ -358,8 +387,9 @@ export class CodexCardView extends BaseScriptComponent {
 
     /**
      * Sizes the overlay against the whole phone screen (the Safe Render Region it lives in is
-     * smaller than the screen): the dim covers every pixel, the card gets its screen margins,
-     * and the image is made exactly 3:2 at full card width.
+     * smaller than the screen): the dim covers every pixel and the card gets its screen margins.
+     * The image takes the space the lore doesn't need: 3:2 at full width if that fits, else
+     * 16:9 at full width, else 16:9 centred and as wide as the height allows.
      */
     private layoutOverlay() {
         const toLocal = (x: number, y: number) => this.rootST.screenPointToLocalPoint(new vec2(x, y));
@@ -371,16 +401,186 @@ export class CodexCardView extends BaseScriptComponent {
         const cardBottomRight = toLocal(CARD_SCREEN.right, CARD_SCREEN.bottom);
         UiFactory.setRect(this.cardST, { left: cardTopLeft.x, right: cardBottomRight.x, bottom: cardBottomRight.y, top: cardTopLeft.y });
 
-        // 3:2 image: width in screen heights = card width fraction * inner width * aspect.
-        const cardW = CARD_SCREEN.right - CARD_SCREEN.left;
+        // Sizes in "screen heights" so width and height compare fairly.
+        const cardW = (CARD_SCREEN.right - CARD_SCREEN.left) * this.uiCamera.aspect;
         const cardH = CARD_SCREEN.bottom - CARD_SCREEN.top;
-        const imageW = cardW * (1 - CARD_PAD_X) * this.uiCamera.aspect;
-        const imageUnits = Math.min((imageW / 1.5) / cardH * 2, IMAGE_TOP - (BUTTON_TOP + 0.4)); // leave room for lore
+        const innerW = cardW * (1 - CARD_PAD_X);
+        const toUnitsY = (h: number) => (h / cardH) * 2;      // screen heights -> card units
+        const maxImage = IMAGE_TOP - (BUTTON_TOP + 0.04 + LORE_MIN_HEIGHT + 0.04);
+
+        let halfWidth = 1 - CARD_PAD_X;                        // card units
+        let imageUnits = toUnitsY(innerW / 1.5);               // 3:2, full width
+        this.imageAspect = 1.5;
+        if (imageUnits > maxImage) {
+            imageUnits = toUnitsY(innerW / VIDEO_ASPECT);      // 16:9, full width
+            this.imageAspect = VIDEO_ASPECT;
+        }
+        if (imageUnits > maxImage) {
+            imageUnits = maxImage;                             // 16:9, narrower, centred
+            const widthScreen = (maxImage / 2) * cardH * VIDEO_ASPECT;
+            halfWidth = widthScreen / cardW;
+        }
         const imageBottom = IMAGE_TOP - imageUnits;
         const left = -1 + CARD_PAD_X;
         const right = 1 - CARD_PAD_X;
-        UiFactory.setRect(this.pictureST, { left, right, bottom: imageBottom, top: IMAGE_TOP });
+        UiFactory.setRect(this.pictureST, { left: -halfWidth, right: halfWidth, bottom: imageBottom, top: IMAGE_TOP });
         UiFactory.setRect(this.loreST, { left, right, bottom: BUTTON_TOP + 0.04, top: imageBottom - 0.04 });
+    }
+
+    // =====================================================================
+    // Sword transformation video
+    // =====================================================================
+
+    public get isVideoPlaying(): boolean {
+        return this.videoActive;
+    }
+
+    /** stop() throws unless the video is playing or paused, so check first. */
+    private static safeStop(control: VideoTextureProvider) {
+        const status = control.status;
+        if (status === VideoStatus.Playing || status === VideoStatus.Paused) {
+            control.stop();
+        }
+    }
+
+    /**
+     * Plays a video texture once on a centred 16:9 panel over a dark dim, then fades it out
+     * (0.3 s) and calls onEnd. The counter and checkmarks hide meanwhile.
+     */
+    public playVideo(texture: Texture, onEnd: () => void) {
+        const control = texture.control as VideoTextureProvider;
+        this.videoControl = control;
+        this.videoOnEnd = onEnd;
+        this.videoActive = true;
+        this.videoFadingOut = false;
+        this.videoImage.mainPass.baseTex = texture;
+        this.layoutVideo();
+        this.video.enabled = true;
+        this.counter.enabled = false;
+
+        if (this.videoDoneHooked.indexOf(control) < 0) {
+            control.onPlaybackDone.add(() => this.onVideoDone(control));
+            this.videoDoneHooked.push(control);
+        }
+        CodexCardView.safeStop(control);
+        control.play(1); // once, no loop
+        this.videoFadeStart = getTime();
+        this.applyVideoAlpha(0);
+    }
+
+    /** Tap on the video: jump to the end and go straight on (no fade). */
+    public skipVideo() {
+        if (!this.videoActive) {
+            return;
+        }
+        if (this.videoControl) {
+            CodexCardView.safeStop(this.videoControl);
+        }
+        this.finishVideo(true);
+    }
+
+    /** Reset: stop and hide without calling onEnd, so the video can play again later. */
+    public stopVideo() {
+        if (this.videoControl) {
+            CodexCardView.safeStop(this.videoControl);
+        }
+        this.videoOnEnd = null;
+        this.videoActive = false;
+        this.videoFadingOut = false;
+        this.videoFadeStart = -1;
+        this.video.enabled = false;
+        this.counter.enabled = this.counterWanted && !this.isOpen;
+    }
+
+    private onVideoDone(control: VideoTextureProvider) {
+        if (!this.videoActive || control !== this.videoControl || this.videoFadingOut) {
+            return; // skipped, reset, or a stale event
+        }
+        this.videoFadingOut = true;
+        this.videoFadeStart = getTime();
+    }
+
+    private updateVideoFade() {
+        this.watchVideoEnd();
+        if (!this.videoActive || this.videoFadeStart < 0) {
+            return;
+        }
+        const age = getTime() - this.videoFadeStart;
+        if (this.videoFadingOut) {
+            const t = Math.min(1, age / VIDEO_FADE_OUT);
+            this.applyVideoAlpha(1 - t);
+            if (t >= 1) {
+                this.finishVideo(false);
+            }
+        } else {
+            const t = Math.min(1, age / VIDEO_FADE_IN);
+            this.applyVideoAlpha(t);
+            if (t >= 1) {
+                this.videoFadeStart = -1; // playing; wait for onPlaybackDone
+            }
+        }
+    }
+
+    /**
+     * Backup for onPlaybackDone, which does not always fire (in Lens Studio's preview a
+     * play(1) video loops): when the time reaches the last frame - or wraps back to the
+     * start - pause on the last frame and treat it as done.
+     */
+    private watchVideoEnd() {
+        const c = this.videoControl;
+        if (!this.videoActive || this.videoFadingOut || !c || c.status !== VideoStatus.Playing) {
+            this.lastVideoTime = 0;
+            return;
+        }
+        const t = c.currentTime;
+        const atEnd = c.duration > 0 && t >= c.duration - VIDEO_END_MARGIN;
+        const wrapped = t < this.lastVideoTime - 0.5;
+        this.lastVideoTime = t;
+        if (atEnd || wrapped) {
+            c.pause();
+            this.onVideoDone(c);
+        }
+    }
+
+    private finishVideo(skipped: boolean) {
+        const onEnd = this.videoOnEnd;
+        this.videoOnEnd = null;
+        this.videoActive = false;
+        this.videoFadingOut = false;
+        this.videoFadeStart = -1;
+        this.video.enabled = false;
+        this.counter.enabled = this.counterWanted && !this.isOpen;
+        if (onEnd) {
+            onEnd();
+        }
+    }
+
+    private applyVideoAlpha(a: number) {
+        this.videoDim.mainPass.baseColor = new vec4(VIDEO_DIM.x, VIDEO_DIM.y, VIDEO_DIM.z, VIDEO_DIM.w * a);
+        this.videoImage.mainPass.baseColor = new vec4(1, 1, 1, a);
+    }
+
+    /** 16:9 panel at 95% of the screen width, centred; dim over the whole screen. */
+    private layoutVideo() {
+        const toLocal = (x: number, y: number) => this.rootST.screenPointToLocalPoint(new vec2(x, y));
+        const topLeft = toLocal(0, 0);
+        const bottomRight = toLocal(1, 1);
+        UiFactory.setRect(this.videoDimST, { left: topLeft.x - 0.1, right: bottomRight.x + 0.1, bottom: bottomRight.y - 0.1, top: topLeft.y + 0.1 });
+
+        const heightFraction = (VIDEO_WIDTH * this.uiCamera.aspect) / VIDEO_ASPECT; // of the screen height
+        const a = toLocal((1 - VIDEO_WIDTH) / 2, 0.5 - heightFraction / 2);
+        const b = toLocal((1 + VIDEO_WIDTH) / 2, 0.5 + heightFraction / 2);
+        UiFactory.setRect(this.videoST, { left: a.x, right: b.x, bottom: b.y, top: a.y });
+    }
+
+    private buildVideoOverlay() {
+        this.video = this.ui.createObject("SwordVideoOverlay", this.root, { left: -1, right: 1, bottom: -1, top: 1 });
+        const dim = this.ui.createObject("VideoDim", this.video, { left: -2, right: 2, bottom: -2, top: 2 });
+        this.videoDimST = UiFactory.getScreenTransform(dim);
+        this.videoDim = this.ui.addImage(dim, this.roundedRect, VIDEO_DIM);
+        const panel = this.ui.createObject("VideoPanel", this.video, { left: -0.95, right: 0.95, bottom: -0.3, top: 0.3 });
+        this.videoST = UiFactory.getScreenTransform(panel);
+        this.videoImage = this.ui.addImage(panel, this.placeholderImage || this.roundedRect, new vec4(1, 1, 1, 1), StretchMode.Fit);
     }
 
     /** The cyan counter card: rounded rectangle + dark label, like a Relic menu button. */
