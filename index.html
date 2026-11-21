@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aether Relic XR</title>
+<meta name="description" content="Aether Relic XR: a Snapchat Lens. Summon the Aether Codex from a printed sigil card and rebuild the lore of the Wyrendal Dominion in your own room.">
+<meta property="og:title" content="Aether Relic XR">
+<meta property="og:description" content="Summon the Aether Codex from a printed sigil card. A Snapchat Lens built in Lens Studio.">
+<meta property="og:image" content="assets/dominion-map.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0c0913;
+    --surface: #151020;
+    --surface-2: #1d1630;
+    --line: #2e2545;
+    --text: #efe9fb;
+    --muted: #b3a9c9;
+    --teal: #3fe8d6;        /* aether */
+    --teal-deep: #138f88;
+    --thorn: #6a3592;       /* artifacts */
+    --thorn-soft: #9a6cc4;
+    --moon: #d8cbfb;        /* titles */
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--ink); color: var(--text);
+    font: 16px/1.65 "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  img { max-width: 100%; display: block; }
+  a { color: var(--teal); }
+  .wrap { width: min(1100px, 100% - 32px); margin-inline: auto; }
+  h1, h2, h3 { font-family: "Cinzel", Georgia, serif; color: var(--moon); line-height: 1.2; margin: 0 0 .5em; }
+  h1 { font-size: clamp(2.4rem, 7vw, 4.4rem); letter-spacing: .02em; }
+  h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); }
+  h3 { font-size: 1.2rem; }
+  p { margin: 0 0 1em; }
+  .eyebrow { font-size: .78rem; letter-spacing: .18em; text-transform: uppercase; color: var(--teal); font-weight: 600; margin-bottom: .8em; }
+  section { padding: clamp(56px, 9vw, 104px) 0; border-top: 1px solid var(--line); }
+
+  /* Hero */
+  .hero { position: relative; min-height: 88vh; display: grid; align-items: end; padding: 0; border: 0; overflow: hidden; }
+  .hero-bg { position: absolute; inset: 0; background: url("assets/dominion-map.jpg") center/cover no-repeat; }
+  .hero-bg::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(12,9,19,.25) 0%, rgba(12,9,19,.55) 45%, var(--ink) 100%); }
+  .hero .wrap { position: relative; padding: 0 0 clamp(48px, 8vw, 96px); }
+  .hero p.lead { font-size: clamp(1.05rem, 2.4vw, 1.3rem); max-width: 40ch; color: var(--text); }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 999px;
+         font-weight: 600; text-decoration: none; border: 1px solid transparent; }
+  .btn-teal { background: var(--teal); color: #08221f; }
+  .btn-ghost { border-color: var(--line); background: rgba(21,16,32,.7); color: var(--text); }
+  .btn-disabled { border-color: var(--line); color: var(--muted); background: rgba(21,16,32,.7); cursor: default; }
+
+  /* Lore quote */
+  .quote { font-family: "Cinzel", Georgia, serif; font-size: clamp(1.3rem, 3.2vw, 1.9rem); color: var(--moon);
+           max-width: 32ch; line-height: 1.45; margin: 0; }
+  .map-figure { margin: 40px 0 0; }
+  .map-figure img { border-radius: var(--radius); border: 2px solid var(--teal-deep); }
+  .map-figure figcaption { color: var(--moon); text-align: center; margin-top: 10px; font-size: .95rem; }
+
+  /* Steps */
+  .steps { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); counter-reset: step; margin-top: 32px; }
+  .step { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+  .step::before { counter-increment: step; content: counter(step); display: inline-grid; place-items: center;
+                  width: 32px; height: 32px; border-radius: 50%; background: var(--surface-2); color: var(--teal);
+                  font-weight: 600; margin-bottom: 12px; border: 1px solid var(--teal-deep); }
+  .step p { color: var(--muted); margin: 0; }
+  .step strong { color: var(--text); }
+  .phones { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-top: 40px; }
+  .phones figure { margin: 0; }
+  .phones img { border-radius: 22px; border: 6px solid #241c38; aspect-ratio: 9/16; object-fit: cover; width: 100%; }
+  .phones figcaption { color: var(--muted); font-size: .88rem; margin-top: 8px; text-align: center; }
+
+  /* Codex grid */
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; color: var(--muted); font-size: .92rem; margin-bottom: 28px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
+  .legend .l-home::before { background: var(--teal); }
+  .legend .l-art::before { background: var(--thorn-soft); }
+  .codex { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+  .card img { aspect-ratio: 4/3; object-fit: cover; width: 100%; background: var(--surface-2); }
+  .card img.contain { object-fit: contain; padding: 18px; }
+  .card .body { padding: 16px 18px 20px; }
+  .tag { display: inline-block; font-size: .7rem; letter-spacing: .14em; font-weight: 600; padding: 4px 10px;
+         border-radius: 999px; margin-bottom: 10px; }
+  .tag.home { background: var(--teal-deep); color: #e9fffc; }
+  .tag.art { background: var(--thorn); color: #f3e9ff; }
+  .card h3 { margin-bottom: 6px; }
+  .card p { color: var(--muted); margin: 0; font-size: .95rem; }
+  .card .num { color: var(--muted); font-size: .8rem; float: right; }
+
+  /* Print */
+  .print { display: grid; gap: 36px; grid-template-columns: minmax(0, 300px) 1fr; align-items: start; }
+  .print img { border-radius: 10px; border: 1px solid var(--line); }
+  ul.clean { padding-left: 1.1em; margin: 0 0 1em; }
+  ul.clean li { margin-bottom: .45em; color: var(--muted); }
+  ul.clean li strong { color: var(--text); }
+
+  /* Menu + tech */
+  .two { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 16px; }
+  .chip { padding: 5px 12px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: .88rem; }
+  .chip.on { background: var(--thorn); border-color: var(--thorn); }
+  .files { list-style: none; padding: 0; margin: 0; }
+  .files li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .files li:last-child { border-bottom: 0; }
+  .files code { color: var(--teal); font-size: .92rem; }
+  .files span { color: var(--muted); display: block; font-size: .9rem; }
+
+  footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--muted); font-size: .9rem; }
+
+  @media (max-width: 720px) {
+    .print { grid-template-columns: 1fr; }
+    .print img { max-width: 260px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-bg" role="img" aria-label="Painted map of the Wyrendal Dominion"></div>
+  <div class="wrap">
+    <div class="eyebrow">Snapchat Lens · Lens Studio</div>
+    <h1>Aether Relic XR</h1>
+    <p class="lead">Summon the Aether Codex from a printed sigil card, open its eight shards, and carry the Wyrendal Dominion into your own room.</p>
+    <div class="actions">
+      <a class="btn btn-teal" href="assets/marker/aether-sigil-marker-print-10cm.pdf" download>Print the Aether Sigil card</a>
+      <a class="btn btn-ghost" href="#how">How it plays</a>
+      <!-- LENS LINK: replace this span with <a class="btn btn-ghost" href="YOUR_LENS_LINK">Open in Snapchat</a> once the Lens is published -->
+      <span class="btn btn-disabled" title="The Lens link will be added once it is published">Snapchat Lens link coming soon</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="lore">
+    <div class="wrap">
+      <div class="eyebrow">The Aether Codex</div>
+      <p class="quote">“Once, the Wyrendal Dominion was a single nation, at peace. Then came the Rupture, and when it was over, the Aetherforge Spire stood at the heart of it all.”</p>
+      <figure class="map-figure">
+        <img src="assets/dominion-map.jpg" width="1200" height="800" alt="Map of the Wyrendal Dominion: golden fields, volcanic peaks, floating islands, forests and violet fog around the Aetherforge Spire">
+        <figcaption>The Wyrendal Dominion</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="eyebrow">Scan → Place → Interact → Collect</div>
+      <h2>How it plays</h2>
+      <div class="steps">
+        <div class="step"><p><strong>Anchor.</strong> Point your phone at the printed Aether Sigil card.</p></div>
+        <div class="step"><p><strong>Summon.</strong> Tap the card. The relic rises from it with a chime, ringed by eight glowing shards.</p></div>
+        <div class="step"><p><strong>Select.</strong> Tap a shard to open its Codex card. Teal shards are Homelands, violet shards are Artifacts.</p></div>
+        <div class="step"><p><strong>Read.</strong> Each card shows the place or artifact, its lore and artwork, right above the relic.</p></div>
+        <div class="step"><p><strong>Place.</strong> Artifacts leave the card: hang Shadowglint on a real wall, lay the Aether-woven Rug on your floor.</p></div>
+        <div class="step"><p><strong>Collect.</strong> Each shard dims with a check. Gather all eight for <em>Codex Complete!</em></p></div>
+      </div>
+      <div class="phones">
+        <figure><img src="assets/screens/01-summon.jpg" alt="The relic on the card, ringed by teal and violet shards" loading="lazy"><figcaption>The relic and its shards</figcaption></figure>
+        <figure><img src="assets/screens/02-codex-card.jpg" alt="A Codex card for Auðreach above the relic" loading="lazy"><figcaption>A Codex card</figcaption></figure>
+        <figure><img src="assets/screens/03-sword.jpg" alt="Shadowglint hanging horizontally on a wall" loading="lazy"><figcaption>Shadowglint on the wall</figcaption></figure>
+        <figure><img src="assets/screens/04-lore.jpg" alt="The Lore card with the Dominion map" loading="lazy"><figcaption>The Lore card</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="codex">
+    <div class="wrap">
+      <div class="eyebrow">Eight shards</div>
+      <h2>The Codex</h2>
+      <div class="legend"><span class="l-home">Homeland: collect its memory</span><span class="l-art">Artifact: place it in your room</span></div>
+      <div class="codex">
+        <article class="card"><img src="assets/codex/1_solheim.jpg" alt="Solheim" loading="lazy"><div class="body"><span class="tag home">HOMELAND</span><h3>Solheim</h3><p>Golden fields and low alabaster walls under an endless dawn. Many peoples pass through, but most who call it home are human.</p></div></article>
+        <article class="card"><img src="assets/codex/2_glodmark.jpg" alt="Glodmark" loading="lazy"><div class="body"><span class="tag home">HOMELAND</span><h3>Glodmark</h3><p>Volcanic peaks, rivers of lava and stone forge halls. The forges belong to the dwarven clans, who have made these mountains their own.</p></div></article>
+        <article class="card"><img class="contain" src="assets/codex/7_shadowglint.png" alt="Shadowglint, a ball of shadow thorns" loading="lazy"><div class="body"><span class="tag art">ARTIFACT</span><h3>Shadowglint</h3><p>“Then carry the truth you'd rather no one saw,” it says, and the weapon grows from thorn and shadow. A shadow gift of the Aetheryl.</p></div></article>
+        <article class="card"><img src="assets/codex/3_celestara.jpg" alt="Celestara" loading="lazy"><div class="body"><span class="tag home">HOMELAND</span><h3>Celestara</h3><p>Floating islands and carved libraries beneath silver-lavender storms. Seekers of every kind come to study, though most scholars are human.</p></div></article>
+        <article class="card"><img src="assets/codex/4_vaettmar.jpg" alt="Vaettmar" loading="lazy"><div class="body"><span class="tag home">HOMELAND</span><h3>Vaettmar</h3><p>Moonlit canopies, spirit glades and trees that whisper. These ancient forests are the home of the elves.</p></div></article>
+        <article class="card"><img src="assets/codex/8_aether-woven-rug.jpg" alt="The Aether-woven Rug" loading="lazy"><div class="body"><span class="tag art">ARTIFACT</span><h3>Aether-woven Rug</h3><p>Woven from veilweave, the Dominion's fine hex-weave cloth, threaded with aether that glows teal in the dark.</p></div></article>
+        <article class="card"><img src="assets/codex/5_mrokfen.jpg" alt="Mrokfen" loading="lazy"><div class="body"><span class="tag home">HOMELAND</span><h3>Mrokfen</h3><p>Obsidian plains lost in violet fog, where moon-temples stand among pools of hot violet water. A hard land, settled by hardy human folk.</p></div></article>
+        <article class="card"><img src="assets/codex/6_audreach.jpg" alt="Auðreach" loading="lazy"><div class="body"><span class="tag home">THE REACH</span><h3>Auðreach</h3><p>Dangerous, unclaimed wilds between the five lands. No kingdom rules here. Harrowgate, at the only reliable bridge, is the last hearth before the Spire.</p></div></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="print">
+    <div class="wrap print">
+      <img src="assets/marker/aether-sigil-marker.png" width="300" height="300" alt="The Aether Sigil card: a teal crystal inside a rune circle, labelled Aetherforge Spire">
+      <div>
+        <div class="eyebrow">Your anchor</div>
+        <h2>Print the Aether Sigil card</h2>
+        <ul class="clean">
+          <li><strong>Size:</strong> print the PDF at <strong>Actual size / 100%</strong> (not “Fit to page”). The outside of the black border should measure <strong>10 × 10 cm</strong>.</li>
+          <li><strong>Paper:</strong> matte paper or card stock. Gloss reflects light and confuses tracking.</li>
+          <li><strong>Keep it flat:</strong> glue it to card if it curls.</li>
+          <li><strong>Light:</strong> even room light, no harsh glare across the card.</li>
+          <li><strong>Distance:</strong> hold the phone 20–50 cm away with the whole card in view, and keep your fingers off it.</li>
+        </ul>
+        <div class="actions">
+          <a class="btn btn-teal" href="assets/marker/aether-sigil-marker-print-10cm.pdf" download>Download PDF (10 cm)</a>
+          <a class="btn btn-ghost" href="assets/marker/aether-sigil-marker.png" download>Marker image (PNG)</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="menu">
+    <div class="wrap two">
+      <div class="panel">
+        <div class="eyebrow">The Relic menu</div>
+        <h3>Extra effects</h3>
+        <p style="color:var(--muted)">A round <strong style="color:var(--text)">Relic</strong> button opens a small menu. Drag its ⋮⋮ handle anywhere; it snaps to the nearest side.</p>
+        <div class="chips"><span class="chip on">Spin</span><span class="chip">Speed</span><span class="chip">Orbit</span><span class="chip">Bounce</span><span class="chip on">Glow</span><span class="chip">Light</span><span class="chip">Lore</span><span class="chip">Reset</span></div>
+        <p style="color:var(--muted);margin:0">Reset, or a long-press anywhere, clears the Codex back to 0/8.</p>
+      </div>
+      <div class="panel">
+        <div class="eyebrow">Under the hood</div>
+        <h3>Built with Lens Studio 5</h3>
+        <p style="color:var(--muted)">Clean TypeScript with a small state machine: <code style="color:var(--teal)">ANCHOR → SUMMON → SELECT → CARD → PLACING → COMPLETE</code>. Image Marker tracking anchors the relic; World Mesh and plane ray casts place the artifacts on real walls and floors.</p>
+        <p style="color:var(--muted);margin:0">Read the scripts below, or browse the <a href="https://github.com/blue2233/aether-relic-xr">repository</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="code">
+    <div class="wrap">
+      <div class="eyebrow">Source</div>
+      <h2>The scripts</h2>
+      <ul class="files panel">
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/AetherLensController.ts"><code>AetherLensController.ts</code></a><span>The core loop: state machine, tap routing, collecting, reset.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/MarkerRelicController.ts"><code>MarkerRelicController.ts</code></a><span>Sigil card tracking, tap-on-card, the relic's summon pop.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/ShardRing.ts"><code>ShardRing.ts</code></a><span>The eight shards: colours, animation, tap picking.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/CodexCardView.ts"><code>CodexCardView.ts</code></a><span>The floating Codex card, checkmarks and the Collected counter.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/CodexData.ts"><code>CodexData.ts</code></a><span>The eight Codex entries and their lore.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/RoomPlacementController.ts"><code>RoomPlacementController.ts</code></a><span>Real-world hit tests; sword on a wall, rug on the floor.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/RelicEffects.ts"><code>RelicEffects.ts</code></a><span>Spin, Speed, Orbit, Bounce, Glow, Light, rug grow, sounds.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/RelicMenuController.ts"><code>RelicMenuController.ts</code></a><span>The draggable Relic menu and the Lore card.</span></li>
+        <li><a href="https://github.com/blue2233/aether-relic-xr/blob/main/scripts/UiFactory.ts"><code>UiFactory.ts</code></a><span>Shared UI helpers and colour palette.</span></li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">Aether Relic XR · CRCP6380 Final Project · Made with Lens Studio</div>
+</footer>
+
+</body>
+</html>
