@@ -171,6 +171,10 @@ export class RelicMenuController extends BaseScriptComponent {
 
     /** WORLD > Reset. Set by AetherLensController. */
     public onReset: () => void = () => {};
+    /** The menu only opens when this says so (the Lens: once the relic is summoned). */
+    public canOpen: () => boolean = () => true;
+    /** Called when the Relic button is tapped while the menu is locked. */
+    public onLockedTap: () => void = () => {};
     /** Lore card opened (true) or closed (false); the Lens hides its hint meanwhile. */
     public onLoreToggled: (open: boolean) => void = () => {};
 
@@ -304,6 +308,10 @@ export class RelicMenuController extends BaseScriptComponent {
             return true; // a tap on the handle does nothing
         }
         if (this.menuButton.st.containsScreenPoint(screenPos)) {
+            if (!this.expanded && !this.canOpen()) {
+                this.onLockedTap(); // nothing to control yet: the Lens mocks you instead
+                return true;
+            }
             this.setExpanded(!this.expanded);
             return true;
         }

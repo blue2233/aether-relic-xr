@@ -192,6 +192,8 @@ export class AetherLensController extends BaseScriptComponent {
         this.marker.onCardLost = () => this.onCardLost();
         this.menu.onReset = () => this.resetAll();
         this.menu.onLoreToggled = (open) => this.onLoreToggled(open);
+        this.menu.canOpen = () => this.marker.isSummoned();
+        this.menu.onLockedTap = () => this.onLockedMenuTap();
         if (this.oldPlacementText) {
             this.oldPlacementText.enabled = false;
         }
@@ -698,9 +700,44 @@ export class AetherLensController extends BaseScriptComponent {
         this.hintST.anchors = Rect.create(a.left + shiftX, a.right + shiftX, a.bottom, a.top);
     }
 
+    // ---------- Relic menu tapped before there is a relic ----------
+    private readonly lockedMenuQuips = [
+        "Error: I'm broken until you\nread the clue on the screen.",
+        "No relic, no menu. That clue\nisn't decorative, you know.",
+        "Still broken. Still waiting.\nThe instructions. Read them.",
+    ];
+    private lockedQuipIndex = 0;
+
+    /** Relic button before summoning: a sarcastic red error, then the current instruction. */
+    private onLockedMenuTap() {
+        const quip = this.lockedMenuQuips[this.lockedQuipIndex % this.lockedMenuQuips.length];
+        this.lockedQuipIndex++;
+        this.showHint(quip, 2.5, true, "error");
+    }
+
+    /** The instruction that belongs to the current step (for after a temporary message). */
+    private restoreStateHint() {
+        switch (this.state) {
+            case GameState.Anchor:
+                this.showHint(this.hints.anchor);
+                break;
+            case GameState.Sighting:
+                this.showHint(this.hints.sighting);
+                break;
+            case GameState.Summon:
+                this.showHint(this.hints.found, 0, false, "found");
+                break;
+            case GameState.Placing:
+                this.showHint(this.placement.instructionFor(CODEX_ENTRIES[this.placingIndex].artifact));
+                break;
+            default:
+                this.hideHint();
+        }
+    }
+
     private onHintTimer() {
-        if (this.hintRestoresInstruction && this.state === GameState.Placing) {
-            this.showHint(this.placement.instructionFor(CODEX_ENTRIES[this.placingIndex].artifact));
+        if (this.hintRestoresInstruction) {
+            this.restoreStateHint();
         } else {
             this.hideHint();
         }
