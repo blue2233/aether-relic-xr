@@ -65,6 +65,21 @@ const VIDEO_FADE_OUT = 0.3;
 const VIDEO_DIM = new vec4(0, 0, 0, 0.75);
 const VIDEO_END_MARGIN = 0.1;      // seconds before the end that count as "ended"
 
+// End-of-collection teaser (same card, different content and button row). Narrator voice.
+const TEASER_TAG = "AETHERFORGE SPIRE";
+const TEASER_TITLE = "Oh. You Finished.";
+const TEASER_BODY =
+    "Eight for eight. Genuinely impressive, by your standards. The Wyrendal Dominion is " +
+    "hoarding more artifacts, and it keeps them in Aetherforge Spire. Naturally.";
+const TEASER_PLAY = "Fine. Take Me to the Spire.";
+const TEASER_SOON = "Coming Soon. Ish.";
+const TEASER_CLOSE = "Not now, I'm basking";
+// Teaser button row: one big teal button, a small text-only Close under it.
+const TEASER_PRIMARY_TOP = -0.58, TEASER_PRIMARY_BOTTOM = -0.80;
+const TEASER_CLOSE_TOP = -0.83, TEASER_CLOSE_BOTTOM = -0.96;
+const SOON_PULSE_SPEED = 3.0;      // radians per second
+const SOON_PULSE_AMOUNT = 0.03;    // +-3% scale
+
 // "Collected N/8" counter card, bottom-left corner (below the hint, clear of the right-side menu).
 const COUNTER_RECT: UiRect = { left: -0.94, right: -0.36, bottom: -0.97, top: -0.84 };
 const COUNTER_FILL = new vec4(0.2, 0.82, 0.86, 0.92);   // bright aether cyan
@@ -129,6 +144,9 @@ export class CodexCardView extends BaseScriptComponent {
     private picture: Image;
     private primary: { st: ScreenTransform; image: Image; text: Text };
     private close: { st: ScreenTransform; image: Image; text: Text };
+    private teaserMode = false;          // the overlay is showing the end-of-collection teaser
+    private tagST: ScreenTransform;
+    private soonPulseStart = -1;         // "Coming Soon" pill pulse, -1 = off
     private checks: { obj: SceneObject; st: ScreenTransform }[] = [];
     private checked: boolean[] = [];
     private primaryEnabled = true;
@@ -174,6 +192,7 @@ export class CodexCardView extends BaseScriptComponent {
         this.createEvent("LateUpdateEvent").bind(() => {
             this.placeChecks();
             this.updatePop();
+            this.updateSoonPulse();
             this.updateVideoFade();
         });
     }
@@ -184,6 +203,7 @@ export class CodexCardView extends BaseScriptComponent {
 
     /** STEP 4: opens the card for one Codex entry. `collected` greys out the main button. */
     public open(index: number, collected: boolean) {
+        this.setTeaserMode(false);
         const entry = CODEX_ENTRIES[index];
         const isHomeland = entry.category === CodexCategory.Homeland;
 
@@ -211,7 +231,73 @@ export class CodexCardView extends BaseScriptComponent {
         this.startPop();
     }
 
+    /**
+     * End-of-collection teaser on the same card: tag, title, image, body, one big teal
+     * button and a small text-only Close. Taps are handled by handleTap like any card.
+     */
+    public openTeaser(image: Texture) {
+        this.setTeaserMode(true);
+        this.tagText.text = TEASER_TAG;
+        this.tagImage.mainPass.baseColor = UiColors.teal;
+        this.titleText.text = TEASER_TITLE;
+        this.loreText.text = TEASER_BODY;
+        const texture = image || this.placeholderImage;
+        this.picture.mainPass.baseTex = texture;
+        this.picture.stretchMode = StretchMode.Fit;      // show the whole map
+        this.picture.mainPass.baseColor = new vec4(1, 1, 1, 1);
+
+        this.primaryEnabled = true;
+        this.primary.text.text = TEASER_PLAY;
+        this.primary.image.mainPass.baseColor = UiColors.teal;
+        this.close.text.text = TEASER_CLOSE;
+
+        this.layoutOverlay();
+        this.overlay.enabled = true;
+        this.counter.enabled = false;
+        this.startPop();
+    }
+
+    /** "Play" tapped: the button becomes a disabled, softly pulsing "Coming Soon" pill. */
+    public showComingSoon() {
+        this.primaryEnabled = false;
+        this.primary.text.text = TEASER_SOON;
+        this.primary.image.mainPass.baseColor = UiColors.disabled;
+        this.soonPulseStart = getTime();
+    }
+
+    public get isTeaserOpen(): boolean {
+        return this.overlay.enabled && this.teaserMode;
+    }
+
+    /** Teaser vs Codex card: button labels/colours that differ, and the pulse. */
+    private setTeaserMode(on: boolean) {
+        this.teaserMode = on;
+        this.stopSoonPulse();
+        this.close.image.mainPass.baseColor = on ? new vec4(0, 0, 0, 0) : UiColors.idle; // text-only in the teaser
+        this.close.text.textFill.color = on ? UiColors.textDim : UiColors.text;
+        this.close.text.text = "Close";
+    }
+
+    private updateSoonPulse() {
+        if (this.soonPulseStart < 0 || !this.overlay.enabled) {
+            return;
+        }
+        const s = 1 + SOON_PULSE_AMOUNT * Math.sin((getTime() - this.soonPulseStart) * SOON_PULSE_SPEED);
+        this.primary.st.scale = new vec3(s, s, 1);
+        const c = UiColors.disabled;
+        const a = c.w * (0.8 + 0.2 * Math.sin((getTime() - this.soonPulseStart) * SOON_PULSE_SPEED));
+        this.primary.image.mainPass.baseColor = new vec4(c.x, c.y, c.z, a);
+    }
+
+    private stopSoonPulse() {
+        this.soonPulseStart = -1;
+        if (this.primary) {
+            this.primary.st.scale = vec3.one();
+        }
+    }
+
     public hide() {
+        this.stopSoonPulse();
         if (this.popStart >= 0) {
             this.applyPop(1); // restore full colours if closed mid-animation
             this.popStart = -1;
@@ -357,6 +443,7 @@ export class CodexCardView extends BaseScriptComponent {
 
         // Category tag (top-left pill)
         const tag = this.ui.createObject("CategoryTag", this.card, { left, right: left + 0.55, bottom: TAG_BOTTOM, top: TAG_TOP });
+        this.tagST = UiFactory.getScreenTransform(tag);
         this.tagImage = this.ui.addImage(tag, this.roundedRect, UiColors.teal);
         this.tagText = this.ui.addLabel(tag, "HOMELAND", 15);
 
@@ -424,7 +511,18 @@ export class CodexCardView extends BaseScriptComponent {
         const left = -1 + CARD_PAD_X;
         const right = 1 - CARD_PAD_X;
         UiFactory.setRect(this.pictureST, { left: -halfWidth, right: halfWidth, bottom: imageBottom, top: IMAGE_TOP });
-        UiFactory.setRect(this.loreST, { left, right, bottom: BUTTON_TOP + 0.04, top: imageBottom - 0.04 });
+        // The teaser's tag ("AETHERFORGE SPIRE") is longer than a category, so its pill is wider.
+        UiFactory.setRect(this.tagST, { left, right: left + (this.teaserMode ? 0.95 : 0.55), bottom: TAG_BOTTOM, top: TAG_TOP });
+        if (this.teaserMode) {
+            // One big button with a small text Close under it; the body ends above the button.
+            UiFactory.setRect(this.loreST, { left, right, bottom: TEASER_PRIMARY_TOP + 0.04, top: imageBottom - 0.04 });
+            UiFactory.setRect(this.primary.st, { left, right, bottom: TEASER_PRIMARY_BOTTOM, top: TEASER_PRIMARY_TOP });
+            UiFactory.setRect(this.close.st, { left: -0.5, right: 0.5, bottom: TEASER_CLOSE_BOTTOM, top: TEASER_CLOSE_TOP });
+        } else {
+            UiFactory.setRect(this.loreST, { left, right, bottom: BUTTON_TOP + 0.04, top: imageBottom - 0.04 });
+            UiFactory.setRect(this.primary.st, { left, right: -0.02, bottom: BUTTON_BOTTOM, top: BUTTON_TOP });
+            UiFactory.setRect(this.close.st, { left: 0.02, right, bottom: BUTTON_BOTTOM, top: BUTTON_TOP });
+        }
     }
 
     // =====================================================================

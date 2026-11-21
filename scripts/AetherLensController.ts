@@ -27,6 +27,8 @@ import { AetherDust } from "./AetherDust";
  *   PLACING  "Tap a wall..." / "Tap the floor..."     tap -> sword on wall / rug on floor
  *      | collected or placed -> shard dims + check, counter "Collected N/8"
  *   COMPLETE "Codex Complete!" + warm Light + fanfare when N = 8
+ *      | ~2 s later
+ *   TEASER   "Aetherforge Spire" card: Play -> "Coming Soon" pill + chime; Close -> COMPLETE
  *
  *   Reset (menu WORLD > Reset, or long-press anywhere) clears everything back to ANCHOR, 0/8.
  *
@@ -51,7 +53,8 @@ const SHAKE_AMOUNT = 0.05;                            // Safe Region units
 // Sighting: the card must be in view this long, and held near the centre this long.
 const SIGHT_MIN_SECONDS = 1.2;
 const CENTER_DWELL_SECONDS = 0.4;
-const CENTER_BOX = new vec2(0.18, 0.16);              // half-size of the "centred" area, screen 0..1
+const CENTER_BOX = new vec2(0.18, 0.16);
+const TEASER_DELAY_SECONDS = 2;                       // after Codex Complete              // half-size of the "centred" area, screen 0..1
 
 enum GameState {
     Anchor = "ANCHOR",
@@ -61,6 +64,7 @@ enum GameState {
     Card = "CARD",
     Video = "VIDEO",
     Placing = "PLACING",
+    Teaser = "TEASER",
     Complete = "COMPLETE",
 }
 
@@ -127,6 +131,10 @@ export class AetherLensController extends BaseScriptComponent {
     errorSound: AudioComponent;
 
     @input
+    @hint("Image on the end-of-collection teaser card (Codex/Images/dominion-map-1200)")
+    teaserImage: Texture;
+
+    @input
     @hint("Seconds to hold a finger down (outside the menu) to Reset")
     longPressSeconds: number = 0.8;
 
@@ -174,6 +182,8 @@ export class AetherLensController extends BaseScriptComponent {
         }
         this.hintTimer = this.createEvent("DelayedCallbackEvent");
         this.hintTimer.bind(() => this.onHintTimer());
+        this.teaserTimer = this.createEvent("DelayedCallbackEvent");
+        this.teaserTimer.bind(() => this.onTeaserTimer());
 
         this.createEvent("OnStartEvent").bind(() => this.onStart());
         this.createEvent("TapEvent").bind((e) => this.routeTap(e.getTapPosition()));
@@ -426,6 +436,9 @@ export class AetherLensController extends BaseScriptComponent {
         if (this.isComplete()) {
             this.setState(GameState.Complete);
             this.menu.setVisible(true);
+            if (this.teaserPending) {
+                this.showTeaser();
+            }
         } else {
             this.enterSelect();
         }
@@ -508,6 +521,37 @@ export class AetherLensController extends BaseScriptComponent {
         this.effects.playComplete();
         this.showHint(this.hints.complete, 5);
         this.hintText.size = this.completeTextSize; // big celebratory message
+        this.teaserTimer.reset(TEASER_DELAY_SECONDS);
+    }
+
+    // =====================================================================
+    // TEASER - "Aetherforge Spire" card after the Codex is complete
+    // =====================================================================
+
+    private teaserTimer: DelayedCallbackEvent;
+    private teaserPending = false; // a Codex card was open when the teaser was due
+
+    private onTeaserTimer() {
+        if (this.state === GameState.Complete) {
+            this.showTeaser();
+        } else if (this.state === GameState.Card && this.isComplete()) {
+            this.teaserPending = true; // show it when that card closes
+        }
+    }
+
+    private showTeaser() {
+        this.teaserPending = false;
+        this.setState(GameState.Teaser);
+        this.menu.setVisible(false);
+        this.hideHint();
+        this.card.openTeaser(this.teaserImage);
+    }
+
+    /** Close: back to the finished scene, counter at 8/8. */
+    private closeTeaser() {
+        this.card.hide();
+        this.setState(GameState.Complete);
+        this.menu.setVisible(true);
     }
 
     private collectedCount(): number {
@@ -532,6 +576,8 @@ export class AetherLensController extends BaseScriptComponent {
         this.collected = CODEX_ENTRIES.map(() => false);
         this.openIndex = this.placingIndex = -1;
         this.missStreak = 0;
+        this.teaserPending = false;
+        this.teaserTimer.reset(1e6); // cancel a pending teaser
         this.card.stopVideo(); // can play again next time
         this.setShake(0);
         this.card.hide();
@@ -559,6 +605,17 @@ export class AetherLensController extends BaseScriptComponent {
     private routeTap(screenPos: vec2) {
         if (this.longPressFired) {
             this.longPressFired = false; // this tap ended a long-press (Reset)
+            return;
+        }
+        if (this.state === GameState.Teaser) {
+            // The teaser covers the screen: nothing reaches the relic, shards or placement.
+            const hit = this.card.handleTap(screenPos);
+            if (hit === "primary") {
+                this.card.showComingSoon();
+                this.effects.playChime();
+            } else if (hit === "close" || hit === "outside") {
+                this.closeTeaser();
+            }
             return;
         }
         if (this.state === GameState.Video) {
