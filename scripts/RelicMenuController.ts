@@ -69,9 +69,13 @@ const LORE_LAYOUT = {
     title: { left: -0.9, right: 0.9, bottom: 0.8, top: 0.95 },
     body: { left: -0.84, right: 0.84, bottom: 0.42, top: 0.78 },
     map: { left: -0.84, right: 0.84, bottom: -0.62, top: 0.38 },   // area the 3:2 map is fitted into
-    caption: { left: -0.84, right: 0.84, bottom: -0.76, top: -0.65 },
-    footer: { left: -0.9, right: 0.9, bottom: -0.96, top: -0.84 },
+    caption: { left: -0.84, right: 0.84, bottom: -0.73, top: -0.64 },
+    link: { left: -0.84, right: 0.84, bottom: -0.84, top: -0.75 },
+    footer: { left: -0.9, right: 0.9, bottom: -0.97, top: -0.87 },
 };
+
+// Project page. Phone Lenses can't open web links, so it is shown as text to type or search.
+const LORE_LINK = "blue2233.github.io/aether-relic-xr";
 const MAP_ASPECT = 3 / 2;          // dominion-map-1200 is 1200 x 800
 const MAP_BORDER = 0.025;          // thin teal frame, as a fraction of the map area's height
 const MAP_CAPTION = "The Wyrendal Dominion";
@@ -625,8 +629,11 @@ export class RelicMenuController extends BaseScriptComponent {
             this.ui.addLabel(caption, MAP_CAPTION, 13).textFill.color = UiColors.moonlight;
         }
 
+        const link = this.ui.createObject("LoreLink", this.loreCard, LORE_LAYOUT.link);
+        this.ui.addLabel(link, "More: " + LORE_LINK, 13).textFill.color = new vec4(0.35, 1.0, 0.9, 1); // bright aether teal
+
         const footer = this.ui.createObject("LoreFooter", this.loreCard, LORE_LAYOUT.footer);
-        this.ui.addLabel(footer, "Tap anywhere to close", 12).textFill.color = UiColors.textDim;
+        this.ui.addLabel(footer, "Tap anywhere to close", 11).textFill.color = UiColors.textDim;
 
         this.loreCard.enabled = false;
     }
