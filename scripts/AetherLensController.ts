@@ -339,7 +339,7 @@ export class AetherLensController extends BaseScriptComponent {
             this.missStreak = 0;
             this.openCard(index);
         } else {
-            this.onShardMiss();
+            this.onShardMiss(screenPos);
         }
     }
 
@@ -354,8 +354,9 @@ export class AetherLensController extends BaseScriptComponent {
         "Nope. That's the room.\nThe room is not collectible.",
         "Another miss. I'm logging\nthese, by the way.",
         "Tap a shard. Any shard.\nI'm not picky.",
-        "The relic doesn't need poking.\nThe shards, however...",
     ];
+    // Always shown when the tap lands on the relic itself (it isn't in the random rotation).
+    private readonly relicQuip = "The relic doesn't need poking.\nThe shards, however...";
     private readonly streakQuips: { [misses: number]: string } = {
         5: "Five misses in a row.\nA record. Not a good one.",
         10: "Ten misses. I've started\na support group for you.",
@@ -364,13 +365,20 @@ export class AetherLensController extends BaseScriptComponent {
     private missStreak = 0;
     private lastQuipTime = -10;
 
-    /** A tap that hit no shard: show the next quip (shuffled, no repeats until all are used). */
-    private onShardMiss() {
+    /**
+     * A tap that hit no shard. On the relic: always the relic line. Anywhere else: the next
+     * quip (shuffled, no repeats until all are used), or a streak line at 5 / 10 misses.
+     */
+    private onShardMiss(screenPos: vec2) {
         if (getTime() - this.lastQuipTime < 0.5) {
             return; // rapid tapping: let the current quip be read
         }
         this.lastQuipTime = getTime();
         this.missStreak++;
+        if (this.marker.isTapOnRelic(screenPos)) {
+            this.showHint(this.relicQuip, 2.5);
+            return;
+        }
         let quip = this.streakQuips[this.missStreak];
         if (!quip) {
             if (this.quipBag.length === 0) {

@@ -141,6 +141,37 @@ export class MarkerRelicController extends BaseScriptComponent {
         return hit.distance(cardCenter) <= this.cardTapRadius;
     }
 
+    /**
+     * True if a screen tap lands on the summoned relic. The relic is a short disc, so the tap's
+     * ray is tested against its bottom, middle and top planes: a hit within the disc's radius
+     * on any of them counts. Works where the relic was last seen, even if the card is lost.
+     */
+    public isTapOnRelic(screenPos: vec2): boolean {
+        if (!this.summoned || !this.relic.enabled) {
+            return false;
+        }
+        const relicT = this.relic.getTransform();
+        const center = relicT.getWorldPosition();
+        const axis = relicT.up;                                  // stands along the card's normal
+        const radius = this.relicWidthOnCard / 2 + 0.5;          // + a little finger slack, cm
+        const halfHeight = Math.max(this.baseLift, 0.5);
+
+        const origin = this.camera.getTransform().getWorldPosition();
+        const dir = this.camera.screenSpaceToWorldSpace(screenPos, 100).sub(origin).normalize();
+        const facing = dir.dot(axis);
+        if (Math.abs(facing) < 1e-4) {
+            return false; // looking exactly edge-on
+        }
+        for (const h of [-halfHeight, 0, halfHeight]) {
+            const planePoint = center.add(axis.uniformScale(h));
+            const t = planePoint.sub(origin).dot(axis) / facing;
+            if (t > 0 && origin.add(dir.uniformScale(t)).distance(planePoint) <= radius) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // =====================================================================
     // Per-frame tracking
     // =====================================================================
